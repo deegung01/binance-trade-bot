@@ -1,8 +1,8 @@
 # Go
-backend-go/data*/
-backend-go/data-test/
-backend-go/app
-backend-go/binance-bot.exe
+/data/
+/data-test/
+/app
+/binance-bot.exe
 
 # Node / Next.js
 frontend/node_modules/

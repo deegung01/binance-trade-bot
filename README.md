@@ -16,26 +16,25 @@ Bot giao dịch tự động trên **Binance Spot Testnet** + dashboard web, ki�
 
 ```
 binance-trade-bot/
-├── backend-go/               → Render Web Service
-│   ├── cmd/server/main.go    # entrypoint (PORT, DATA_DIR env)
-│   └── internal/
-│       ├── api/api.go        # REST API (CORS sẵn)
-│       ├── config/config.go  # config + state + JSON store
-│       ├── engine/engine.go  # trading loop: signals → SL/TP/trailing/grid
-│       ├── exchange/binance.go # Binance REST client (testnet + mainnet data)
-│       ├── strategy/strategy.go # 5 strategies + adaptive grid
-│       └── ta/ta.go          # SMA/EMA/RSI/MACD/ATR
-├── frontend/                 → Vercel
-│   └── app/                  # Overview, Chart, Trades, Strategy, Logs, Settings
-└── render.yaml               # tham khảo config Web Service
+├── go.mod                   # module Go ở GỐC repo — Render build từ đây
+├── main.go                  # entrypoint (PORT, DATA_DIR env)
+├── internal/
+│   ├── api/api.go           # REST API (CORS sẵn)
+│   ├── config/config.go     # config + state + JSON store
+│   ├── engine/engine.go     # trading loop: signals → SL/TP/trailing/grid
+│   ├── exchange/binance.go  # Binance REST client (testnet + mainnet data)
+│   ├── strategy/strategy.go # 5 strategies + adaptive grid
+│   └── ta/ta.go             # SMA/EMA/RSI/MACD/ATR
+├── frontend/                → Vercel
+│   └── app/                 # Overview, Chart, Trades, Strategy, Logs, Settings
+└── render.yaml              # tham khảo config Web Service
 ```
 
 ## Chạy local
 
 ```bash
 # Backend (cần Go 1.22+)
-cd backend-go
-go build -o app ./cmd/server
+go build -o app .
 DATA_DIR=./data PORT=8080 ./app
 
 # Frontend
@@ -44,7 +43,7 @@ npm install
 NEXT_PUBLIC_API_URL=http://localhost:8080 npm run dev
 ```
 
-Test: `cd backend-go && go test ./...`
+Test: `go test ./...`
 
 ## Deploy
 
@@ -55,9 +54,9 @@ Render **không có Blueprint ở free plan** — tạo Web Service thủ công:
 1. Push code lên GitHub (repo này)
 2. Render → **New + → Web Service** → connect repo
 3. Cấu hình:
-   - **Root Directory**: `backend-go`
-   - **Runtime**: Go (tự nhận `go.mod`)
-   - **Build Command**: `go build -o app ./cmd/server`
+   - **Root Directory**: để trống (module Go nằm ở gốc repo)
+   - **Runtime**: Go
+   - **Build Command**: `go build -tags netgo -ldflags '-s -w' -o app`
    - **Start Command**: `./app`
    - **Instance Type**: Free
 4. Env vars (tùy chọn, đã có default): `TRADING_MODE`, `TRADING_SYMBOLS`, `TIMEFRAME`, `STRATEGY`, `STOP_LOSS_PCT`, `TAKE_PROFIT_PCT`, `TRAILING_STOP`, `GRID_LEVELS`... Keys live mode: `BINANCE_API_KEY`, `BINANCE_API_SECRET`

@@ -1,16 +1,14 @@
 # Backend Go — deploy bằng Render Web Service (thủ công, free plan)
 #
-# Render KHÔNG hỗ trợ Blueprint trên free plan — tạo Web Service thủ công:
-#   Render → New + → Web Service → connect repo deegung01/binance-trade-bot
-#   Settings:
-#     Name:          binance-trade-bot
-#     Region:        Singapore
-#     Branch:        main
-#     Root Directory: backend-go
-#     Runtime:       Go          (Render tự nhận diện go.mod)
-#     Build Command:  go build -o app ./cmd/server
-#     Start Command:  ./app
-#     Instance Type:  Free
+# Cấu trúc repo: module Go nằm ở GỐC repo (go.mod + main.go + internal/).
+# Service Render của bạn đang build từ gốc repo với Go runtime.
+#
+# Cấu hình đúng trên Render (Settings → Build & Deploy):
+#   Root Directory: (để trống — mặc định)
+#   Runtime:       Go
+#   Build Command: go build -tags netgo -ldflags '-s -w' -o app
+#   Start Command: ./app
+#   Instance Type: Free
 #   Environment variables (optional, đều có default):
 #     TRADING_MODE=paper
 #     TRADING_SYMBOLS=BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT
@@ -27,16 +25,6 @@ services:
     runtime: go
     plan: free
     region: singapore
-    rootDir: backend-go
-    buildCommand: go build -o app ./cmd/server
+    buildCommand: go build -tags netgo -ldflags '-s -w' -o app
     startCommand: ./app
     healthCheckPath: /health
-    envVars:
-      - key: TRADING_MODE
-        value: paper
-      - key: TRADING_SYMBOLS
-        value: BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT
-      - key: TIMEFRAME
-        value: 5m
-      - key: STRATEGY
-        value: sma_cross
