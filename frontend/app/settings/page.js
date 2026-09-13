@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Check, Eye, EyeOff, KeyRound, Save, Trash2 } from "lucide-react";
+import { KeyRound, Save } from "lucide-react";
 import { api } from "@/lib/api";
 
 function Field({ label, hint, children }) {
@@ -19,8 +19,6 @@ const inputCls =
 
 export default function SettingsPage() {
   const [cfg, setCfg] = useState(null);
-  const [creds, setCreds] = useState({ binance_api_key: "", binance_api_secret: "" });
-  const [showSecret, setShowSecret] = useState(false);
   const [msg, setMsg] = useState({ type: "", text: "" });
   const [busy, setBusy] = useState(false);
 
@@ -62,34 +60,6 @@ export default function SettingsPage() {
         }),
       });
       setMsg({ type: "ok", text: "Saved — engine restarted with new config" });
-    } catch (e) {
-      setMsg({ type: "error", text: e.message });
-    }
-    setBusy(false);
-  };
-
-  const saveCreds = async () => {
-    setBusy(true);
-    try {
-      await api("/credentials", {
-        method: "POST",
-        body: JSON.stringify(creds),
-      });
-      await load();
-      setMsg({ type: "ok", text: "Credentials saved" });
-    } catch (e) {
-      setMsg({ type: "error", text: e.message });
-    }
-    setBusy(false);
-  };
-
-  const clearCreds = async () => {
-    setBusy(true);
-    try {
-      await api("/credentials/clear", { method: "POST" });
-      await load();
-      setCreds({ binance_api_key: "", binance_api_secret: "" });
-      setMsg({ type: "ok", text: "Credentials cleared — back to paper mode" });
     } catch (e) {
       setMsg({ type: "error", text: e.message });
     }
@@ -247,55 +217,30 @@ export default function SettingsPage() {
         <Save size={14} /> Save configuration
       </button>
 
-      {/* Credentials */}
+      {/* Credentials — Go backend đọc keys từ env vars (Render dashboard) */}
       <div className="panel p-5 space-y-4">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-medium text-white flex items-center gap-2">
             <KeyRound size={14} className="text-amber-400" /> Binance Testnet API keys
           </h2>
           {cfg.has_credentials && (
-            <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300">saved</span>
+            <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300">đã cấu hình qua env</span>
           )}
         </div>
         <p className="text-[11px] text-zinc-500">
-          Get keys at <span className="text-amber-400">testnet.binance.vision</span> (login with GitHub). Only needed for LIVE mode — paper mode works without keys.
+          Backend (Go) đọc keys từ biến môi trường — không lưu trong database. Lấy keys tại{" "}
+          <span className="text-amber-400">testnet.binance.vision</span> (login GitHub), rồi set trên Render:
         </p>
-        <div className="grid md:grid-cols-2 gap-4">
-          <Field label="API key">
-            <input
-              value={creds.binance_api_key}
-              onChange={(e) => setCreds({ ...creds, binance_api_key: e.target.value })}
-              placeholder={cfg.has_credentials ? "•••••• saved — paste new to replace" : "64-char testnet API key"}
-              className={inputCls}
-            />
-          </Field>
-          <Field label="API secret">
-            <div className="relative">
-              <input
-                type={showSecret ? "text" : "password"}
-                value={creds.binance_api_secret}
-                onChange={(e) => setCreds({ ...creds, binance_api_secret: e.target.value })}
-                className={inputCls + " pr-10"}
-              />
-              <button
-                onClick={() => setShowSecret(!showSecret)}
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-white"
-              >
-                {showSecret ? <EyeOff size={14} /> : <Eye size={14} />}
-              </button>
-            </div>
-          </Field>
+        <div className="rounded-lg bg-[#0d1117] border border-[#1e2430] p-3 font-mono text-[11px] text-zinc-300 space-y-1">
+          <p className="text-zinc-500"># Render → Service → Environment:</p>
+          <p>BINANCE_API_KEY = &lt;64-char key&gt;</p>
+          <p>BINANCE_API_SECRET = &lt;secret&gt;</p>
+          <p className="text-zinc-500"># sau đó set TRADING_MODE=live để bot đặt lệnh thật trên testnet</p>
         </div>
-        <div className="flex gap-2">
-          <button onClick={saveCreds} disabled={busy} className="px-4 py-2 rounded-lg bg-white/5 text-zinc-200 hover:bg-white/10 text-xs flex items-center gap-2">
-            <Check size={13} /> Save keys
-          </button>
-          {cfg.has_credentials && (
-            <button onClick={clearCreds} disabled={busy} className="px-4 py-2 rounded-lg bg-rose-500/10 text-rose-300 hover:bg-rose-500/20 text-xs flex items-center gap-2">
-              <Trash2 size={13} /> Remove
-            </button>
-          )}
-        </div>
+        <p className="text-[11px] text-zinc-600">
+          Paper mode hoạt động không cần keys. Mode hiện tại:{" "}
+          <b className={cfg.trading_mode === "live" ? "text-rose-300" : "text-sky-300"}>{cfg.trading_mode}</b>
+        </p>
       </div>
 
       {/* Danger zone */}

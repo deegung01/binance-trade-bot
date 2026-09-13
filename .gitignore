@@ -1,21 +1,16 @@
-# Python
-__pycache__/
-*.py[cod]
-.venv/
-venv/
-.env
-
-# Data
-backend/data/
-*.db
-*.sqlite
+# Go
+backend-go/data*/
+backend-go/data-test/
+backend-go/app
+backend-go/binance-bot.exe
 
 # Node / Next.js
-node_modules/
-.next/
-out/
-.vercel
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/.vercel
 
 # Misc
 .DS_Store
 *.log
+.env
