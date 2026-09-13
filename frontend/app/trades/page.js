@@ -108,7 +108,14 @@ export default function TradesPage() {
                     {unreal > 0 ? "+" : ""}
                     {fmtUSD(unreal)} <span className="text-[10px] opacity-70">{fmtPct(upct)}</span>
                   </td>
-                  <td className="text-right text-zinc-500 text-[11px] max-w-[180px] truncate">{t.signal_reason || t.exit_reason || "—"}</td>
+                  <td className="text-right text-zinc-500 text-[11px] max-w-[180px] truncate">
+                    {t.signal_reason || t.exit_reason || "—"}
+                    {t.meta?.grid_count > 0 && (
+                      <span className="ml-1 text-amber-400" title={`DCA ${t.meta.grid_count} lần`}>
+                        [{t.meta.grid_count}x]
+                      </span>
+                    )}
+                  </td>
                   <td className="text-right pr-4">
                     {t.status === "open" && (
                       <button

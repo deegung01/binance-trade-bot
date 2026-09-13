@@ -25,6 +25,17 @@ const STRATEGY_DOCS = {
     desc: "Mua khi histogram MACD翻 chuyển từ âm sang dương; thoát khi âm.",
     rules: ["Entry: hist chuyển từ ≤0 sang >0", "Exit: hist < 0"],
   },
+  adaptive_grid: {
+    name: "Adaptive Grid + DCA",
+    desc: "Grid thích ứng theo volatility: spacing = ATR14% (kẹp 0.5%–4%). Giá tụt mỗi 1 spacing dưới giá vốn → DCA mua thêm, tối đa N levels. SL/TP tự rebase theo giá vốn trung bình mới. Kết hợp tốt với Trailing Stop.",
+    rules: [
+      "Entry: RSI 30–65 (thị trường đi ngang)",
+      "Spacing động: clamp(ATR14% × 1.0, 0.5%, 4%)",
+      "Add: giá ≤ avg_cost × (1 − spacing) → +1 grid stake",
+      "Max levels: cấu hình Grid Levels ở Settings",
+      "Exit: SL / TP / Trailing (engine quản lý)",
+    ],
+  },
 };
 
 export default function StrategyPage() {

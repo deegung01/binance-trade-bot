@@ -16,6 +16,16 @@ from app.api.routes import router
 async def lifespan(app: FastAPI):
     # create tables
     Base.metadata.create_all(bind=engine)
+    # lightweight migration: add Trade.meta column to pre-existing DBs
+    try:
+        from sqlalchemy import inspect, text
+        with engine.connect() as conn:
+            cols = [c["name"] for c in inspect(conn).get_columns("trades")]
+            if "meta" not in cols:
+                conn.execute(text("ALTER TABLE trades ADD COLUMN meta JSON"))
+                conn.commit()
+    except Exception:
+        pass
     # start trading loop
     trading_engine.start()
     yield

@@ -56,6 +56,9 @@ export default function SettingsPage() {
           take_profit_pct: Number(cfg.take_profit_pct),
           max_open_trades: Number(cfg.max_open_trades),
           poll_interval: Number(cfg.poll_interval),
+          trailing_stop: !!cfg.trailing_stop,
+          trailing_stop_pct: Number(cfg.trailing_stop_pct || 1),
+          grid_levels: Number(cfg.grid_levels || 4),
         }),
       });
       setMsg({ type: "ok", text: "Saved — engine restarted with new config" });
@@ -189,6 +192,49 @@ export default function SettingsPage() {
           </Field>
           <Field label="Max open trades">
             <input type="number" value={cfg.max_open_trades} onChange={(e) => setCfg({ ...cfg, max_open_trades: e.target.value })} className={inputCls} />
+          </Field>
+        </div>
+      </div>
+
+      {/* Trailing stop + Grid */}
+      <div className="panel p-5 space-y-4">
+        <h2 className="text-sm font-medium text-white">Trailing stop & Adaptive grid</h2>
+        <div className="grid md:grid-cols-3 gap-4">
+          <Field
+            label="Trailing stop"
+            hint="Bật để SL tự bám theo giá cao nhất (chỉ nâng lên, không hạ). Ap dụng cho MỌI strategy."
+          >
+            <select
+              value={cfg.trailing_stop ? "on" : "off"}
+              onChange={(e) => setCfg({ ...cfg, trailing_stop: e.target.value === "on" })}
+              className={inputCls}
+            >
+              <option value="off">Tắt (chỉ SL/TP cố định)</option>
+              <option value="on">Bật (SL trailing theo high)</option>
+            </select>
+          </Field>
+          <Field
+            label="Trailing distance (%)"
+            hint="SL = highest_price × (1 − trail%). Kích hoạt khi lãi ≥ 2× khoảng cách"
+          >
+            <input
+              type="number"
+              step="0.1"
+              value={cfg.trailing_stop_pct ?? 1}
+              onChange={(e) => setCfg({ ...cfg, trailing_stop_pct: e.target.value })}
+              className={inputCls}
+            />
+          </Field>
+          <Field
+            label="Grid levels (Adaptive Grid)"
+            hint="Số lần DCA add tối đa mỗi lệnh khi chạy strategy Adaptive Grid"
+          >
+            <input
+              type="number"
+              value={cfg.grid_levels ?? 4}
+              onChange={(e) => setCfg({ ...cfg, grid_levels: e.target.value })}
+              className={inputCls}
+            />
           </Field>
         </div>
       </div>

@@ -187,11 +187,77 @@ class MacdFlip(BaseStrategy):
         return None
 
 
+class AdaptiveGrid(BaseStrategy):
+    """
+    Adaptive Grid (DCA):
+    - Entry khi RSI mid-range (30..65) — grid thích thị trường đi ngang.
+    - Grid spacing THÍCH ỨNG theo volatility: spacing% = clamp(ATR14% × 1.0, 0.5%, 4%).
+    - Mỗi lần giá tụt một spacing dưới weighted avg cost → mua thêm 1 grid stake
+      (DCA add), tối đa cfg['grid_levels'] lần.
+    - Engine rebase SL/TP theo avg cost mới sau mỗi lần add; thoát bằng
+      SL / TP / trailing stop.
+    """
+    name = "adaptive_grid"
+    label = "Adaptive Grid (ATR spacing + DCA)"
+
+    ATR_MULT = 1.0
+    SPACING_MIN_PCT = 0.5
+    SPACING_MAX_PCT = 4.0
+
+    def compute(self, candles: List[dict]) -> dict:
+        closes = [c["close"] for c in candles]
+        atr = ta.atr([c["high"] for c in candles], [c["low"] for c in candles], closes, 14)
+        price = closes[-1] if closes else None
+        return {
+            "atr": atr,
+            "atr_pct": (atr / price * 100) if (atr and price) else None,
+            "rsi": ta.rsi(closes, 14),
+        }
+
+    def _spacing_pct(self, candles: List[dict]) -> float:
+        closes = [c["close"] for c in candles]
+        atr = ta.atr([c["high"] for c in candles], [c["low"] for c in candles], closes, 14)
+        price = closes[-1] if closes else 0.0
+        if not atr or not price:
+            return 2.0
+        raw = atr / price * 100 * self.ATR_MULT
+        return max(self.SPACING_MIN_PCT, min(self.SPACING_MAX_PCT, raw))
+
+    def entry_signal(self, candles: List[dict]) -> Optional[Tuple[str, str]]:
+        closes = [c["close"] for c in candles]
+        rsi_now = ta.rsi(closes, 14)
+        if rsi_now is None:
+            return None
+        if 30.0 <= rsi_now <= 65.0:
+            spacing = self._spacing_pct(candles)
+            return ("buy", f"grid start: RSI {rsi_now:.0f} mid-range, spacing {spacing:.2f}%")
+        return None
+
+    def adjust_signal(self, candles: List[dict], trade, cfg: dict) -> Optional[float]:
+        """Position adjustment hook (như adjust_trade_position của freqtrade).
+        Trả về số USDT cần mua thêm, hoặc None."""
+        meta = getattr(trade, "meta", None) or {}
+        grid_count = int(meta.get("grid_count", 0))
+        max_levels = int(cfg.get("grid_levels", 4))
+        if grid_count >= max_levels:
+            return None
+        price = candles[-1]["close"]
+        spacing = self._spacing_pct(candles)
+        trigger = trade.entry_price * (1 - spacing / 100.0)
+        if price <= trigger:
+            return round(float(meta.get("initial_stake", trade.stake)), 2)
+        return None
+
+    def exit_signal(self, candles: List[dict], trade) -> Optional[str]:
+        return None  # thoát qua SL / TP / trailing (engine quản lý)
+
+
 STRATEGIES = {
     "sma_cross": SmaCross,
     "ema_cross": EmaCross,
     "rsi_revert": RsiRevert,
     "macd": MacdFlip,
+    "adaptive_grid": AdaptiveGrid,
 }
 
 

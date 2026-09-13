@@ -22,7 +22,7 @@ PUBLIC_FIELDS = {
     "trading_mode", "paper_data_source", "start_balance", "trading_symbols",
     "timeframe", "strategy", "stake_mode", "stake_amount", "stake_percent",
     "stop_loss_pct", "take_profit_pct", "max_open_trades", "poll_interval",
-    "bot_running",
+    "bot_running", "trailing_stop", "trailing_stop_pct", "grid_levels",
 }
 
 
@@ -71,6 +71,9 @@ class ConfigUpdate(BaseModel):
     max_open_trades: Optional[int] = None
     poll_interval: Optional[int] = None
     bot_running: Optional[bool] = None
+    trailing_stop: Optional[bool] = None
+    trailing_stop_pct: Optional[float] = None
+    grid_levels: Optional[int] = None
 
 
 class ManualBuy(BaseModel):

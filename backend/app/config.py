@@ -88,6 +88,9 @@ DEFAULT_CONFIG: dict = {
     "take_profit_pct": float(os.getenv("TAKE_PROFIT_PCT", "4")),
     "max_open_trades": int(os.getenv("MAX_OPEN_TRADES", "3")),
     "poll_interval": int(os.getenv("POLL_INTERVAL", "15")),
+    "trailing_stop": os.getenv("TRAILING_STOP", "false").lower() in ("1", "true", "yes"),
+    "trailing_stop_pct": float(os.getenv("TRAILING_STOP_PCT", "1")),
+    "grid_levels": int(os.getenv("GRID_LEVELS", "4")),
     # runtime state (not user-facing)
     "bot_running": True,
     "reset_requested": False,

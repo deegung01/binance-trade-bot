@@ -39,6 +39,7 @@ class Trade(Base):
 
     opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    meta: Mapped[dict] = mapped_column(JSON, default=dict)  # grid_count, initial_stake, trail_activated…
 
     def to_dict(self) -> dict:
         return {
@@ -61,6 +62,7 @@ class Trade(Base):
             "exit_reason": self.exit_reason,
             "opened_at": self.opened_at.isoformat() if self.opened_at else None,
             "closed_at": self.closed_at.isoformat() if self.closed_at else None,
+            "meta": self.meta or {},
         }
 
 

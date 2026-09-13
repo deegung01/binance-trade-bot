@@ -319,6 +319,13 @@ class TradingEngine:
                 fee=fee,
                 strategy=strategy_name,
                 signal_reason=reason,
+                meta={
+                    "grid_count": 0,
+                    "initial_stake": stake,
+                    "last_add_price": price,
+                    "trail_activated": False,
+                    "trail_high": price,
+                },
             )
             db.add(trade)
             db.commit()
@@ -343,9 +350,42 @@ class TradingEngine:
             db.rollback()
 
     def _manage_trade(self, db, cfg, mode, client, state, trade: Trade, price: float, candles):
+        meta = dict(trade.meta or {})
+
+        # ---- 1) TRAILING STOP (chỉ nâng SL lên, không bao giờ hạ xuống) ----
+        trailing_on = bool(cfg.get("trailing_stop", False))
+        trail_pct = float(cfg.get("trailing_stop_pct", 1.0)) / 100.0
+        if trailing_on and trade.status == "open":
+            prev_high = float(meta.get("trail_high", trade.entry_price))
+            if price > prev_high:
+                meta["trail_high"] = price
+                prev_high = price
+            # kích hoạt khi lãi ≥ trail_pct*2 (đủ đệm), sau đó SL bám theo high
+            gain_pct = (price - trade.entry_price) / trade.entry_price
+            if not meta.get("trail_activated") and gain_pct >= trail_pct * 2:
+                meta["trail_activated"] = True
+            if meta.get("trail_activated"):
+                new_sl = prev_high * (1 - trail_pct)
+                if new_sl > trade.stop_loss:
+                    trade.stop_loss = new_sl
+                    trade.meta = meta  # reassign để SQLAlchemy nhận diện thay đổi
+                    db.commit()
+                    self._log(
+                        "INFO",
+                        "trail",
+                        f"TRAIL {trade.symbol}: SL nâng lên {new_sl:.4f} (high {prev_high:.4f})",
+                    )
+                else:
+                    trade.meta = meta
+                    db.commit()
+            else:
+                trade.meta = meta
+                db.commit()
+
+        # ---- 2) EXIT CHECKS ----
         exit_reason = None
         if price <= trade.stop_loss:
-            exit_reason = "stop_loss"
+            exit_reason = "stop_loss" if not meta.get("trail_activated") else "trailing_stop"
         elif price >= trade.take_profit:
             exit_reason = "take_profit"
         else:
@@ -355,8 +395,80 @@ class TradingEngine:
                     exit_reason = "signal"
             except Exception:
                 pass
+
         if exit_reason:
             self._close_trade(db, mode, client, state, trade, price, exit_reason)
+            return
+
+        # ---- 3) GRID DCA ADD (adaptive grid) ----
+        try:
+            strategy = get_strategy(trade.strategy or cfg.get("strategy", "sma_cross"))
+            adjust = getattr(strategy, "adjust_signal", None)
+            if adjust and candles:
+                extra_usdt = adjust(candles, trade, cfg)
+                if extra_usdt and extra_usdt > 0:
+                    self._grid_add(db, mode, client, state, trade, extra_usdt, price, strategy)
+        except Exception:
+            pass
+
+    def _grid_add(self, db, mode, client, state, trade: Trade, extra_usdt: float, price: float, strategy):
+        """DCA add một grid level: mua thêm, rebase avg cost + SL/TP theo cost mới."""
+        try:
+            meta = dict(trade.meta or {})
+            if mode == "paper":
+                if extra_usdt > state["cash"]:
+                    self._log("WARN", "grid", f"skip grid add {trade.symbol}: not enough cash")
+                    return
+                res = client.market_buy(trade.symbol, extra_usdt, price, state)
+                add_qty, add_fee = res["executedQty"], res["fee"]
+            else:
+                res = client.market_buy(trade.symbol, extra_usdt)
+                add_qty = float(res.get("executedQty", 0))
+                cum = float(res.get("cummulativeQuoteQty", extra_usdt))
+                price = cum / add_qty if add_qty else price
+                add_fee = 0.0
+
+            # rebase weighted avg entry
+            total_cost = trade.entry_price * trade.qty + extra_usdt
+            new_qty = trade.qty + add_qty
+            new_avg = total_cost / new_qty if new_qty else trade.entry_price
+
+            old_sl_gap = (trade.entry_price - trade.stop_loss) / trade.entry_price if trade.entry_price else 0
+            old_tp_gap = (trade.take_profit - trade.entry_price) / trade.entry_price if trade.entry_price else 0
+
+            trade.qty = new_qty
+            trade.entry_price = new_avg
+            trade.stake = trade.stake + extra_usdt
+            trade.fee += add_fee
+            trade.stop_loss = new_avg * (1 - old_sl_gap)
+            trade.take_profit = new_avg * (1 + old_tp_gap)
+            meta["grid_count"] = int(meta.get("grid_count", 0)) + 1
+            meta["last_add_price"] = price
+            trade.meta = meta
+            db.commit()
+            self._order_log(
+                db,
+                trade_id=trade.id,
+                symbol=trade.symbol,
+                action="grid_add",
+                mode=mode,
+                qty=add_qty,
+                price=price,
+                status="ok",
+                detail=f"DCA add level {meta['grid_count']}: +{extra_usdt:.0f} USDT, new avg {new_avg:.4f}",
+            )
+            self._log(
+                "INFO",
+                "grid",
+                f"GRID ADD {trade.symbol} +{add_qty:.6f} @ {price} → avg {new_avg:.4f} (level {meta['grid_count']})",
+            )
+        except ExchangeError as e:
+            self._order_log(
+                db, trade_id=trade.id, symbol=trade.symbol, action="error", mode=mode,
+                status="error", detail=f"grid add failed: {e}",
+            )
+            self._log("ERROR", "grid", f"GRID ADD {trade.symbol} failed: {e}")
+            db.rollback()
 
     def _close_trade(self, db, mode, client, state, trade: Trade, price: float, reason: str):
         try:
