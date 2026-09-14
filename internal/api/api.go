@@ -33,6 +33,8 @@ func Mux() *http.ServeMux {
 	mux.HandleFunc("/api/reset", handleReset)
 	mux.HandleFunc("/api/account", handleAccount)
 	mux.HandleFunc("/api/regimes", handleRegimes)
+	mux.HandleFunc("/api/convert/preview", handleConvertPreview)
+	mux.HandleFunc("/api/convert/execute", handleConvertExecute)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]string{"status": "ok"})
 	})
@@ -406,6 +408,8 @@ func handleConfig(w http.ResponseWriter, r *http.Request) {
 			"trailing_stop":        cfg.TrailingStop,
 			"trailing_stop_pct":   cfg.TrailingStopPct,
 			"grid_levels":         cfg.GridLevels,
+			"cooldown_minutes":    cfg.CooldownMinutes,
+			"daily_loss_limit_pct": cfg.DailyLossLimitPct,
 			"bot_running":          cfg.BotRunning,
 			"strategies_available": strategy.List(),
 			"has_credentials":      cfg.BinanceAPIKey != "",
@@ -441,6 +445,8 @@ func handleConfig(w http.ResponseWriter, r *http.Request) {
 		apply("trailing_stop", func() { cfg.TrailingStop = fmt.Sprint(patch["trailing_stop"]) == "true" })
 		apply("trailing_stop_pct", func() { cfg.TrailingStopPct = num(patch["trailing_stop_pct"], cfg.TrailingStopPct) })
 		apply("grid_levels", func() { cfg.GridLevels = int(num(patch["grid_levels"], float64(cfg.GridLevels))) })
+		apply("cooldown_minutes", func() { cfg.CooldownMinutes = int(num(patch["cooldown_minutes"], float64(cfg.CooldownMinutes))) })
+		apply("daily_loss_limit_pct", func() { cfg.DailyLossLimitPct = num(patch["daily_loss_limit_pct"], cfg.DailyLossLimitPct) })
 		apply("bot_running", func() { cfg.BotRunning = fmt.Sprint(patch["bot_running"]) == "true" })
 		if err := config.SaveConfig(cfg); err != nil {
 			writeErr(w, 500, err.Error())
@@ -503,6 +509,11 @@ func handleBuy(w http.ResponseWriter, r *http.Request) {
 func handleSell(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeErr(w, 405, "POST only")
+		return
+	}
+	// /api/sell/{id}/partial → partial close
+	if strings.HasSuffix(r.URL.Path, "/partial") {
+		handlePartialSell(w, r)
 		return
 	}
 	idStr := strings.TrimPrefix(r.URL.Path, "/api/sell/")
@@ -581,4 +592,97 @@ func handleAccount(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, map[string]any{"live": true, "total_usdt": round2(total), "balances": balances})
+}
+
+// ---------------------------------------------------------------------------
+// portfolio convert (P0: 500 coin → USDT)
+// ---------------------------------------------------------------------------
+
+// handleConvertPreview — POST /api/convert/preview
+// body: {"assets": ["BTC","ETH"], "mode": "all"|"selected", "min_value": 1.0}
+// Trả về danh sách coin sẽ bán + tổng USDT ước tính (dry-run, không đặt lệnh).
+func handleConvertPreview(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, 405, "POST only")
+		return
+	}
+	var body struct {
+		Assets   []string `json:"assets"`
+		Mode     string   `json:"mode"`
+		MinValue float64  `json:"min_value"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, 400, "invalid json: "+err.Error())
+		return
+	}
+	if body.Mode == "" {
+		body.Mode = "all"
+	}
+	rows, est, err := engine.Get().ConvertPreview(body.Assets, body.Mode, body.MinValue)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, map[string]any{"rows": rows, "est_total_net": est})
+}
+
+// handleConvertExecute — POST /api/convert/execute
+// body: {"assets": [...], "mode": "all"|"selected", "min_value": 1.0}
+// Bán thật từng coin (live testnet) → USDT. Trả về kết quả từng coin + tổng.
+func handleConvertExecute(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, 405, "POST only")
+		return
+	}
+	var body struct {
+		Assets   []string `json:"assets"`
+		Mode     string   `json:"mode"`
+		MinValue float64  `json:"min_value"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, 400, "invalid json: "+err.Error())
+		return
+	}
+	if body.Mode == "" {
+		body.Mode = "all"
+	}
+	results, total, err := engine.Get().ConvertExecute(body.Assets, body.Mode, body.MinValue)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, map[string]any{"results": results, "total_net_usdt": total})
+}
+
+// handlePartialSell — POST /api/sell/{id}/partial
+// body: {"pct": 50} — đóng 50% lệnh, phần còn lại giữ nguyên SL/TP.
+func handlePartialSell(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, 405, "POST only")
+		return
+	}
+	path := strings.TrimPrefix(r.URL.Path, "/api/sell/")
+	parts := strings.Split(path, "/")
+	if len(parts) != 2 || parts[1] != "partial" {
+		writeErr(w, 404, "not found")
+		return
+	}
+	id, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil {
+		writeErr(w, 400, "invalid trade id")
+		return
+	}
+	var body struct {
+		Pct float64 `json:"pct"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, 400, "invalid json: "+err.Error())
+		return
+	}
+	qty, net, err := engine.Get().PartialSell(id, body.Pct)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true, "sold_qty": qty, "net_usdt": net})
 }

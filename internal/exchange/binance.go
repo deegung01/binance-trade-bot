@@ -8,10 +8,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"sort"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -307,6 +309,143 @@ func (c *Client) Account() (map[string]any, error) {
 	err := c.signed(http.MethodGet, "/account", url.Values{}, &out)
 	return out, err
 }
+
+// --- exchange filters (LOT_SIZE / NOTIONAL) — cần cho convert hết dust ---
+
+var (
+	filterMu    sync.Mutex
+	lotCache    = map[string]LotFilter{}  // symbol → filter
+	exchInfoAt  time.Time
+)
+
+// LotFilter holds the tradable step/min/max for one symbol.
+type LotFilter struct {
+	Symbol    string
+	StepSize  float64 // LOT_SIZE stepSize (base units)
+	MinQty    float64 // LOT_SIZE minQty
+	MaxQty    float64
+	MinNotional float64 // NOTIONAL / MIN_NOTIONAL minNotional (quote USDT)
+}
+
+// SymbolInfo is one row of /exchangeInfo we care about.
+type SymbolInfo struct {
+	Symbol  string          `json:"symbol"`
+	Status  string          `json:"status"`
+	Filters []struct {
+		FilterType  string `json:"filterType"`
+		StepSize    string `json:"stepSize,omitempty"`
+		MinQty      string `json:"minQty,omitempty"`
+		MaxQty      string `json:"maxQty,omitempty"`
+		MinNotional string `json:"minNotional,omitempty"`
+		Notional    string `json:"notional,omitempty"` // newer API shape
+	} `json:"filters"`
+}
+
+// LoadExchangeInfo fetches + caches LOT_SIZE / NOTIONAL filters for all symbols.
+// Cached 30 phút để không spam /exchangeInfo (rất lớn).
+func (c *Client) LoadExchangeInfo() error {
+	filterMu.Lock()
+	defer filterMu.Unlock()
+	if time.Since(exchInfoAt) < 30*time.Minute && len(lotCache) > 0 {
+		return nil
+	}
+	var raw struct {
+		Symbols []SymbolInfo `json:"symbols"`
+	}
+	if err := c.get("/exchangeInfo", url.Values{}, &raw); err != nil {
+		return err
+	}
+	cache := map[string]LotFilter{}
+	for _, s := range raw.Symbols {
+		if s.Status != "TRADING" {
+			continue
+		}
+		lf := LotFilter{Symbol: s.Symbol}
+		for _, f := range s.Filters {
+			switch f.FilterType {
+			case "LOT_SIZE":
+				lf.StepSize, _ = strconv.ParseFloat(f.StepSize, 64)
+				lf.MinQty, _ = strconv.ParseFloat(f.MinQty, 64)
+				lf.MaxQty, _ = strconv.ParseFloat(f.MaxQty, 64)
+			case "NOTIONAL", "MIN_NOTIONAL":
+				if f.MinNotional != "" {
+					lf.MinNotional, _ = strconv.ParseFloat(f.MinNotional, 64)
+				} else if f.Notional != "" {
+					lf.MinNotional, _ = strconv.ParseFloat(f.Notional, 64)
+				}
+			}
+		}
+		cache[s.Symbol] = lf
+	}
+	lotCache = cache
+	exchInfoAt = time.Now()
+	return nil
+}
+
+// LotSize returns the cached filter for one symbol (zero ok=false nếu chưa load).
+func (c *Client) LotSize(symbol string) (LotFilter, bool) {
+	filterMu.Lock()
+	defer filterMu.Unlock()
+	lf, ok := lotCache[symbol]
+	return lf, ok
+}
+
+// RoundQty làm tròn qty xuống bội số của stepSize (floor), không vượt maxQty.
+func (lf LotFilter) RoundQty(qty float64) float64 {
+	if lf.StepSize <= 0 {
+		return math.Floor(qty*1e8) / 1e8
+	}
+	steps := math.Floor(qty / lf.StepSize)
+	q := steps * lf.StepSize
+	// fix lỗi dấu phẩy động: 0.1*3 = 0.30000000000000004
+	q = math.Round(q/lf.StepSize) * lf.StepSize
+	if lf.MaxQty > 0 && q > lf.MaxQty {
+		q = lf.MaxQty
+	}
+	return q
+}
+
+// Sellable kiểm tra 1 balance có bán được không: có pair symbol, qty ≥ minQty,
+// và giá trị ≥ minNotional (nếu biết). Trả về symbol + qty được làm tròn.
+func (c *Client) Sellable(b ValuedBalance, price float64) (string, float64, bool) {
+	if b.Asset == "USDT" || b.Free <= 0 || price <= 0 {
+		return "", 0, false
+	}
+	sym := b.Asset + "USDT"
+	if _, err := c.TickerPrice(sym); err != nil {
+		return "", 0, false // không có pair
+	}
+	lf, _ := c.LotSize(sym)
+	if lf.MinQty > 0 && b.Free < lf.MinQty {
+		return "", 0, false
+	}
+	qty := b.Free
+	if lf.StepSize > 0 {
+		qty = lf.RoundQty(b.Free)
+	}
+	if qty <= 0 {
+		return "", 0, false
+	}
+	if lf.MinNotional > 0 && qty*price < lf.MinNotional {
+		return "", 0, false
+	}
+	return sym, qty, true
+}
+
+// HasPair checks whether <ASSET>USDT exists and is TRADING.
+func (c *Client) HasPair(asset string) bool {
+	_, err := c.TickerPrice(asset + "USDT")
+	return err == nil
+}
+
+// SellQuoteValue ước tính giá trị quote nhận được khi bán qty (trừ phí 0.1%).
+func SellQuoteValue(qty, price float64) float64 {
+	return qty * price * (1 - FeeRate)
+}
+
+// DustThreshold: giá trị tối thiểu (USDT) để 1 coin được auto-convert —
+// dưới ngưỡng này bỏ qua (phí + minNotional làm nó vô nghĩa).
+const DustThreshold = 1.0
 
 func trimF(x float64) string {
 	s := strconv.FormatFloat(x, 'f', 8, 64)

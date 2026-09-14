@@ -1,15 +1,18 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { RefreshCw } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { RefreshCw, Search } from "lucide-react";
 import { api, fmtUSD, fmtPct, fmtNum, fmtDate, pnlColor } from "@/lib/api";
+import { useToast } from "@/components/Toast";
 
 export default function TradesPage() {
+  const toast = useToast();
   const [trades, setTrades] = useState([]);
   const [status, setStatus] = useState(null);
   const [filter, setFilter] = useState("all");
+  const [search, setSearch] = useState("");
+  const [strategyFilter, setStrategyFilter] = useState("");
   const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState("");
 
   const load = async () => {
     try {
@@ -17,7 +20,7 @@ export default function TradesPage() {
       setTrades(t.trades);
       setStatus(s);
     } catch (e) {
-      setMsg(e.message);
+      toast.err(e.message);
     }
   };
 
@@ -25,30 +28,63 @@ export default function TradesPage() {
     load();
     const timer = setInterval(load, 5000);
     return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const closeTrade = async (id) => {
+    if (!confirm(`Đóng toàn bộ lệnh #${id}?`)) return;
     setBusy(true);
     try {
       await api(`/sell/${id}`, { method: "POST" });
+      toast.ok(`Đã đóng lệnh #${id}`);
       await load();
     } catch (e) {
-      setMsg(e.message);
+      toast.err(e.message);
     }
     setBusy(false);
   };
 
-  const shown = trades.filter((t) => filter === "all" || t.status === filter);
+  const partialClose = async (id, pct) => {
+    if (!confirm(`Đóng ${pct}% lệnh #${id}? Phần còn lại giữ nguyên SL/TP.`)) return;
+    setBusy(true);
+    try {
+      const res = await api(`/sell/${id}/partial`, {
+        method: "POST",
+        body: JSON.stringify({ pct }),
+      });
+      toast.ok(`Đóng ${pct}% #${id}: +${fmtUSD(res.net_usdt)} USDT`);
+      await load();
+    } catch (e) {
+      toast.err(e.message);
+    }
+    setBusy(false);
+  };
+
+  const strategies = useMemo(() => {
+    const s = new Set(trades.map((t) => t.strategy).filter(Boolean));
+    return [...s].sort();
+  }, [trades]);
+
+  const shown = useMemo(() => {
+    const q = search.trim().toUpperCase();
+    return trades.filter((t) => {
+      if (filter !== "all" && t.status !== filter) return false;
+      if (strategyFilter && t.strategy !== strategyFilter) return false;
+      if (q && !t.symbol.includes(q)) return false;
+      return true;
+    });
+  }, [trades, filter, strategyFilter, search]);
+
   const prices = status?.last_cycle?.prices || {};
 
   return (
     <div className="space-y-4 max-w-[1400px]">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold text-white">Trades</h1>
-          <p className="text-sm text-zinc-500">All bot trades + manual orders</p>
+          <p className="text-sm text-zinc-500">Tất cả lệnh của bot + manual</p>
         </div>
-        <div className="flex gap-2 items-center">
+        <div className="flex gap-2 items-center flex-wrap">
           <div className="flex rounded-lg overflow-hidden border border-[#1e2430] text-xs">
             {["all", "open", "closed"].map((f) => (
               <button
@@ -62,13 +98,30 @@ export default function TradesPage() {
               </button>
             ))}
           </div>
+          <select
+            value={strategyFilter}
+            onChange={(e) => setStrategyFilter(e.target.value)}
+            className="bg-[#11151d] border border-[#1e2430] rounded-lg px-2.5 py-1.5 text-xs text-white outline-none focus:border-amber-400/50"
+          >
+            <option value="">mọi strategy</option>
+            {strategies.map((s) => (
+              <option key={s} value={s}>{s}</option>
+            ))}
+          </select>
+          <div className="relative">
+            <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-500" />
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Symbol…"
+              className="w-32 bg-[#11151d] border border-[#1e2430] rounded-lg pl-7 pr-2 py-1.5 text-xs text-white outline-none focus:border-amber-400/50"
+            />
+          </div>
           <button onClick={load} className="panel px-3 py-1.5 text-sm text-zinc-300 hover:text-white flex items-center gap-2">
             <RefreshCw size={13} /> Refresh
           </button>
         </div>
       </div>
-
-      {msg && <div className="text-xs text-rose-400">{msg}</div>}
 
       <div className="panel overflow-x-auto">
         <table className="w-full text-xs">
@@ -118,13 +171,23 @@ export default function TradesPage() {
                   </td>
                   <td className="text-right pr-4">
                     {t.status === "open" && (
-                      <button
-                        onClick={() => closeTrade(t.id)}
-                        disabled={busy}
-                        className="text-[11px] px-2 py-1 rounded bg-rose-500/15 text-rose-300 hover:bg-rose-500/25"
-                      >
-                        Close
-                      </button>
+                      <div className="flex gap-1 justify-end">
+                        <button
+                          onClick={() => partialClose(t.id, 50)}
+                          disabled={busy}
+                          title="Đóng 50% lệnh, phần còn lại giữ SL/TP"
+                          className="text-[11px] px-2 py-1 rounded bg-amber-500/15 text-amber-300 hover:bg-amber-500/25"
+                        >
+                          50%
+                        </button>
+                        <button
+                          onClick={() => closeTrade(t.id)}
+                          disabled={busy}
+                          className="text-[11px] px-2 py-1 rounded bg-rose-500/15 text-rose-300 hover:bg-rose-500/25"
+                        >
+                          Close
+                        </button>
+                      </div>
                     )}
                   </td>
                 </tr>
@@ -133,7 +196,7 @@ export default function TradesPage() {
           </tbody>
         </table>
         {shown.length === 0 && (
-          <div className="py-10 text-center text-sm text-zinc-500">No trades yet</div>
+          <div className="py-10 text-center text-sm text-zinc-500">Không có lệnh nào khớp bộ lọc</div>
         )}
       </div>
     </div>

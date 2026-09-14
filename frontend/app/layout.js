@@ -1,5 +1,6 @@
 import "./globals.css";
 import Sidebar from "@/components/Sidebar";
+import { ToastProvider } from "@/components/Toast";
 
 export const metadata = {
   title: "TradeBot — Binance Testnet Dashboard",
@@ -10,8 +11,10 @@ export default function RootLayout({ children }) {
   return (
     <html lang="en">
       <body>
-        <Sidebar />
-        <main className="ml-56 min-h-screen p-6">{children}</main>
+        <ToastProvider>
+          <Sidebar />
+          <main className="ml-56 min-h-screen p-6">{children}</main>
+        </ToastProvider>
       </body>
     </html>
   );

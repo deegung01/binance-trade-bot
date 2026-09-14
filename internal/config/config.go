@@ -32,9 +32,13 @@ type Config struct {
 	BotRunning       bool    `json:"bot_running"`
 	ResetRequested    bool    `json:"reset_requested"`
 
+	// Risk guards
+	CooldownMinutes  int     `json:"cooldown_minutes"`  // sau stop_loss, không entry lại symbol đó trong N phút (0 = off)
+	DailyLossLimitPct float64 `json:"daily_loss_limit_pct"` // mất ≥ X% equity trong ngày → pause bot (0 = off)
+
 	// credentials (never sent to the dashboard)
-	BinanceAPIKey    string `json:"-"`
-	BinanceAPISecret string `json:"-"`
+	BinanceAPIKey    string  `json:"-"`
+	BinanceAPISecret string  `json:"-"`
 }
 
 // State is the paper wallet.
@@ -161,6 +165,8 @@ func defaultConfig() Config {
 		TrailingStop:    envStr("TRAILING_STOP", "false") == "true",
 		TrailingStopPct: envFloat("TRAILING_STOP_PCT", 1),
 		GridLevels:      int(envFloat("GRID_LEVELS", 4)),
+		CooldownMinutes: int(envFloat("COOLDOWN_MINUTES", 0)),
+		DailyLossLimitPct: envFloat("DAILY_LOSS_LIMIT_PCT", 0),
 		BotRunning:      true,
 		BinanceAPIKey:    os.Getenv("BINANCE_API_KEY"),
 		BinanceAPISecret: os.Getenv("BINANCE_API_SECRET"),

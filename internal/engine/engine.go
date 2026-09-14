@@ -30,6 +30,10 @@ type Engine struct {
 	once       sync.Once
 	regimes    map[string]regime.Snapshot // symbol → latest regime snapshot
 	regimesMu  sync.Mutex
+	cooldowns  map[string]time.Time // symbol → thời điểm được phép entry lại
+	cooldownsMu sync.Mutex
+	converts  map[string]bool // convert job id → done
+	convertsMu sync.Mutex
 }
 
 var defaultEngine *Engine
@@ -40,9 +44,47 @@ func Get() *Engine {
 		defaultEngine = &Engine{
 			lastCycle: map[string]any{},
 			regimes:   map[string]regime.Snapshot{},
+			cooldowns: map[string]time.Time{},
+			converts: map[string]bool{},
 		}
 	}
 	return defaultEngine
+}
+
+// Cooldowns returns a copy of the cooldown map (symbol → allowed-after time).
+func (e *Engine) Cooldowns() map[string]time.Time {
+	e.cooldownsMu.Lock()
+	defer e.cooldownsMu.Unlock()
+	out := make(map[string]time.Time, len(e.cooldowns))
+	for k, v := range e.cooldowns {
+		out[k] = v
+	}
+	return out
+}
+
+// setCooldown ghi nhận symbol vừa bị stop_loss → chờ N phút trước khi entry lại.
+func (e *Engine) setCooldown(symbol string, minutes int) {
+	if minutes <= 0 {
+		return
+	}
+	e.cooldownsMu.Lock()
+	e.cooldowns[symbol] = time.Now().Add(time.Duration(minutes) * time.Minute)
+	e.cooldownsMu.Unlock()
+}
+
+// inCooldown checks whether a symbol is still cooling down.
+func (e *Engine) inCooldown(symbol string) bool {
+	e.cooldownsMu.Lock()
+	defer e.cooldownsMu.Unlock()
+	until, ok := e.cooldowns[symbol]
+	if !ok {
+		return false
+	}
+	if time.Now().After(until) {
+		delete(e.cooldowns, symbol)
+		return false
+	}
+	return true
 }
 
 // Regimes returns a copy of the latest per-symbol regime snapshots.
@@ -193,6 +235,10 @@ func (e *Engine) Cycle() {
 		if openSyms[sym] {
 			continue
 		}
+		// cooldown guard: symbol vừa stop_loss → chờ hết N phút
+		if e.inCooldown(sym) {
+			continue
+		}
 		cd := candles[sym]
 		if len(cd) == 0 {
 			continue
@@ -229,7 +275,11 @@ func (e *Engine) Cycle() {
 		}
 	}
 
-	// 4) equity snapshot
+	// 4) circuit breaker: daily loss limit — mất ≥ X% trong ngày UTC → pause bot
+	if cfg.DailyLossLimitPct > 0 {
+		e.dailyLossCheck(cfg)
+	}
+
 	_ = config.SaveState(st)
 	eq := equityOf(st, prices)
 	eqMode := mode
@@ -493,6 +543,13 @@ func (e *Engine) manageTrade(cfg config.Config, mode string, st *config.State, t
 		}
 	}
 	if exitReason != "" {
+		// cooldown: chỉ set khi thoát lỗ (stop_loss / trailing_stop / cut)
+		if exitReason == "stop_loss" || exitReason == "trailing_stop" || strings.Contains(exitReason, "regime_shift") {
+			if cfg.CooldownMinutes > 0 {
+				e.setCooldown(t.Symbol, cfg.CooldownMinutes)
+				e.Log("INFO", "risk", fmt.Sprintf("cooldown %s %d phút sau %s", t.Symbol, cfg.CooldownMinutes, exitReason))
+			}
+		}
 		e.closeTrade(cfg, mode, st, t, price, exitReason)
 		return
 	}
@@ -646,8 +703,307 @@ func toFloat(v any) float64 {
 }
 
 // ---------------------------------------------------------------------------
-// logs
+// risk guards
 // ---------------------------------------------------------------------------
+
+// dailyLossCheck: circuit breaker — so equity hiện tại với equity điểm đầu tiên
+// của ngày UTC. Nếu mất ≥ DailyLossLimitPct% → pause bot + log ERROR.
+// Nếu limit đặt nhưng chưa có baseline ngày hôm nay (điểm equity đầu tiên của
+// ngày), không pause — chỉ khi đã có dữ liệu mới so được.
+func (e *Engine) dailyLossCheck(cfg config.Config) {
+	db := config.LoadDB()
+	today := time.Now().UTC().Format("2006-01-02")
+	var dayStart *config.EquityPoint
+	for i := range db.Equity {
+		p := db.Equity[i]
+		if strings.HasPrefix(p.TS, today) {
+			dayStart = &db.Equity[i]
+			break
+		}
+	}
+	if dayStart == nil || dayStart.Equity <= 0 {
+		return // chưa có baseline hôm nay
+	}
+	// equity mới nhất
+	if len(db.Equity) == 0 {
+		return
+	}
+	lastEq := db.Equity[len(db.Equity)-1].Equity
+	lossPct := (dayStart.Equity - lastEq) / dayStart.Equity * 100
+	if lossPct >= cfg.DailyLossLimitPct {
+		paused := cfg
+		paused.BotRunning = false
+		if err := config.SaveConfig(paused); err == nil {
+			e.Log("ERROR", "risk", fmt.Sprintf(
+				"DAILY LOSS LIMIT: −%.2f%% hôm nay (limit %.2f%%) — bot PAUSED cho tới khi bạn bật lại",
+				lossPct, cfg.DailyLossLimitPct))
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// portfolio convert (500 coin → 1 coin)
+// ---------------------------------------------------------------------------
+
+// ConvertPreview liệt kê những coin nào sẽ được bán và ước tính USDT nhận được.
+// mode="all": mọi coin non-USDT đủ điều kiện. mode="selected": chỉ assets đưa vào.
+// minValue: bỏ qua coin dưới ngưỡng giá trị này (dust).
+func (e *Engine) ConvertPreview(assets []string, mode string, minValue float64) ([]map[string]any, float64, error) {
+	cfg := config.LoadConfig()
+	if cfg.TradingMode != "live" || cfg.BinanceAPIKey == "" {
+		return nil, 0, fmt.Errorf("convert chỉ hoạt động ở live mode (testnet) với API keys")
+	}
+	if minValue <= 0 {
+		minValue = exchange.DustThreshold
+	}
+	client := e.liveClient(cfg)
+	if err := client.LoadExchangeInfo(); err != nil {
+		return nil, 0, fmt.Errorf("exchangeInfo: %w", err)
+	}
+	acc, err := client.Account()
+	if err != nil {
+		return nil, 0, err
+	}
+	raw, _ := acc["balances"].([]any)
+	allPrices, _ := client.AllPrices()
+	if allPrices == nil {
+		allPrices = map[string]float64{}
+	}
+	rows, _ := exchange.ValueBalances(raw, allPrices)
+
+	selected := map[string]bool{}
+	for _, a := range assets {
+		selected[strings.ToUpper(strings.TrimSpace(a))] = true
+	}
+
+	out := []map[string]any{}
+	totalEst := 0.0
+	for _, b := range rows {
+		if b.Asset == "USDT" || b.Free <= 0 {
+			continue
+		}
+		if mode == "selected" && !selected[b.Asset] {
+			continue
+		}
+		price := b.Price
+		if price <= 0 {
+			if p, ok := allPrices[b.Asset+"USDT"]; ok {
+				price = p
+			}
+		}
+		_, qty, tradable := client.Sellable(b, price)
+		estUSDT := exchange.SellQuoteValue(qty, price)
+		row := map[string]any{
+			"asset": b.Asset, "qty": qty, "price": price,
+			"usdt_value": b.USDTValue, "est_net": round(estUSDT, 2),
+			"tradable": tradable,
+		}
+		if !tradable {
+			if b.USDTValue < minValue {
+				row["skip_reason"] = "dust" // dưới ngưỡng giá trị
+			} else if price <= 0 {
+				row["skip_reason"] = "no_price"
+			} else {
+				row["skip_reason"] = "no_pair_or_filter"
+			}
+			out = append(out, row)
+			continue
+		}
+		if estUSDT < minValue {
+			row["tradable"] = false
+			row["skip_reason"] = "dust"
+			out = append(out, row)
+			continue
+		}
+		totalEst += estUSDT
+		out = append(out, row)
+	}
+	return out, round(totalEst, 2), nil
+}
+
+// ConvertExecute bán mọi coin non-USDT đủ điều kiện (all hoặc selected) về USDT.
+// Trả về tổng USDT thực nhận + danh sách kết quả từng coin.
+func (e *Engine) ConvertExecute(assets []string, mode string, minValue float64) ([]map[string]any, float64, error) {
+	cfg := config.LoadConfig()
+	if cfg.TradingMode != "live" || cfg.BinanceAPIKey == "" {
+		return nil, 0, fmt.Errorf("convert chỉ hoạt động ở live mode (testnet) với API keys")
+	}
+	if minValue <= 0 {
+		minValue = exchange.DustThreshold
+	}
+	client := e.liveClient(cfg)
+	if err := client.LoadExchangeInfo(); err != nil {
+		return nil, 0, fmt.Errorf("exchangeInfo: %w", err)
+	}
+	acc, err := client.Account()
+	if err != nil {
+		return nil, 0, err
+	}
+	raw, _ := acc["balances"].([]any)
+	allPrices, _ := client.AllPrices()
+	if allPrices == nil {
+		allPrices = map[string]float64{}
+	}
+	rows, _ := exchange.ValueBalances(raw, allPrices)
+
+	selected := map[string]bool{}
+	for _, a := range assets {
+		selected[strings.ToUpper(strings.TrimSpace(a))] = true
+	}
+
+	results := []map[string]any{}
+	totalUSDT := 0.0
+	converted := 0
+	for _, b := range rows {
+		if b.Asset == "USDT" || b.Free <= 0 {
+			continue
+		}
+		if mode == "selected" && !selected[b.Asset] {
+			continue
+		}
+		price := b.Price
+		if price <= 0 {
+			if p, ok := allPrices[b.Asset+"USDT"]; ok {
+				price = p
+			}
+		}
+		sym, qty, tradable := client.Sellable(b, price)
+		if !tradable {
+			continue
+		}
+		estNet := exchange.SellQuoteValue(qty, price)
+		if estNet < minValue {
+			continue // dust
+		}
+		res, err := client.MarketSell(sym, qty)
+		row := map[string]any{"asset": b.Asset, "symbol": sym, "qty": qty}
+		if err != nil {
+			row["ok"] = false
+			row["error"] = err.Error()
+			e.Log("ERROR", "convert", fmt.Sprintf("sell %s failed: %v", sym, err))
+			results = append(results, row)
+			continue
+		}
+		execQty := toFloat(res["executedQty"])
+		cum := toFloat(res["cummulativeQuoteQty"])
+		got := cum * (1 - tradeFeeRate)
+		row["ok"] = true
+		row["executed_qty"] = execQty
+		row["gross_usdt"] = round(cum, 2)
+		row["net_usdt"] = round(got, 2)
+		totalUSDT += got
+		converted++
+		e.Log("INFO", "convert", fmt.Sprintf("CONVERT %s → %.2f USDT (qty %.8f)", sym, got, execQty))
+		results = append(results, row)
+	}
+	e.Log("INFO", "convert", fmt.Sprintf("convert done: %d coins → %.2f USDT", converted, totalUSDT))
+	return results, round(totalUSDT, 2), nil
+}
+
+// ---------------------------------------------------------------------------
+// partial close
+// ---------------------------------------------------------------------------
+
+// PartialSell đóng một phần lệnh đang mở (pct 1–100). Còn lại giữ nguyên SL/TP.
+func (e *Engine) PartialSell(tradeID int64, pct float64) (float64, float64, error) {
+	if pct <= 0 || pct > 100 {
+		return 0, 0, fmt.Errorf("pct phải trong 1–100")
+	}
+	cfg := config.LoadConfig()
+	st := config.LoadState(cfg)
+	mode := cfg.TradingMode
+	if mode == "live" && (cfg.BinanceAPIKey == "" || cfg.BinanceAPISecret == "") {
+		return 0, 0, fmt.Errorf("live mode thiếu API keys — lệnh bị từ chối")
+	}
+	db := config.LoadDB()
+	var t *config.Trade
+	for i := range db.Trades {
+		if db.Trades[i].ID == tradeID && db.Trades[i].Status == "open" {
+			t = &db.Trades[i]
+			break
+		}
+	}
+	if t == nil {
+		return 0, 0, fmt.Errorf("trade not found or already closed")
+	}
+	client := e.dataClient(cfg)
+	price, err := client.TickerPrice(t.Symbol)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	sellQty := t.Qty * pct / 100
+	if sellQty <= 0 {
+		return 0, 0, fmt.Errorf("sell qty = 0")
+	}
+
+	var gross, fee float64
+	if mode == "paper" {
+		if pos, ok := st.Positions[t.Symbol]; ok {
+			gross = sellQty * price
+			fee = gross * tradeFeeRate
+			st.Cash += gross - fee
+			pos.Qty -= sellQty
+			if pos.Qty <= 1e-12 {
+				delete(st.Positions, t.Symbol)
+			} else {
+				st.Positions[t.Symbol] = pos
+			}
+		}
+	} else {
+		// làm tròn theo LOT_SIZE của sàn
+		if err := client.LoadExchangeInfo(); err == nil {
+			if lf, ok := client.LotSize(t.Symbol); ok && lf.StepSize > 0 {
+				sellQty = lf.RoundQty(sellQty)
+			}
+		}
+		if sellQty <= 0 {
+			return 0, 0, fmt.Errorf("sau LOT_SIZE rounding, qty = 0")
+		}
+		res, err := e.liveClient(cfg).MarketSell(t.Symbol, sellQty)
+		if err != nil {
+			return 0, 0, err
+		}
+		execQty := toFloat(res["executedQty"])
+		cum := toFloat(res["cummulativeQuoteQty"])
+		if cum > 0 && execQty > 0 {
+			gross = cum
+			fee = cum * tradeFeeRate
+		} else {
+			gross = execQty * price
+			fee = gross * tradeFeeRate
+		}
+	}
+
+	// cập nhật trade: qty còn lại, stake proportional, order log
+	remainQty := t.Qty - sellQty
+	remainStake := t.Stake * (1 - pct/100)
+	net := gross - fee
+	_ = config.Mutate(func(c *config.Collection) {
+		for i := range c.Trades {
+			if c.Trades[i].ID == t.ID {
+				tr := &c.Trades[i]
+				tr.Qty = remainQty
+				tr.Stake = remainStake
+				tid := tr.ID
+				qtyC, priceC := sellQty, price
+				c.Orders = append(c.Orders, config.OrderLog{
+					ID: int64(len(c.Orders)) + 1, TradeID: &tid, Symbol: t.Symbol,
+					Action: "partial_sell", Mode: mode, Qty: &qtyC, Price: &priceC, Status: "ok",
+					Detail: fmt.Sprintf("partial close %.0f%%: sold %.6f @ %.2f, net %.2f", pct, sellQty, price, net),
+					CreatedAt: nowISO(),
+				})
+				break
+			}
+		}
+	})
+	_ = config.SaveState(st)
+	e.Log("INFO", "trade", fmt.Sprintf("PARTIAL SELL %s %.0f%%: %.6f @ %.2f (net %.2f, remaining %.6f)",
+		t.Symbol, pct, sellQty, price, gross-fee, remainQty))
+	return sellQty, gross - fee, nil
+}
+
+
 
 // Log appends an engine log entry.
 func (e *Engine) Log(level, module, message string) {

@@ -46,3 +46,9 @@ body {
 .live-dot {
   animation: pulse-dot 1.6s ease-in-out infinite;
 }
+
+/* toast slide-in */
+@keyframes slidein {
+  from { transform: translateX(16px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}

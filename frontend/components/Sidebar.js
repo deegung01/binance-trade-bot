@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   Activity,
+  ArrowRightLeft,
   BarChart3,
   Bot,
   FileText,
@@ -19,6 +20,7 @@ const NAV = [
   { href: "/chart", label: "Chart", icon: BarChart3 },
   { href: "/trades", label: "Trades", icon: Wallet },
   { href: "/strategy", label: "Strategy", icon: Bot },
+  { href: "/convert", label: "Convert → USDT", icon: ArrowRightLeft },
   { href: "/logs", label: "Logs", icon: FileText },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
