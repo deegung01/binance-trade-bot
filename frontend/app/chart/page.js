@@ -1,14 +1,17 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   createChart,
   createSeriesMarkers,
   CrosshairMode,
-  LineStyle,
   CandlestickSeries,
+  HistogramSeries,
+  LineSeries,
 } from "lightweight-charts";
 import { api, fmtUSD } from "@/lib/api";
+import { emaSeries, smaSeries, bbSeries } from "@/lib/indicators";
+import { useToast } from "@/components/Toast";
 
 const INTERVALS = ["1m", "5m", "15m", "1h", "4h", "1d"];
 
@@ -17,20 +20,29 @@ const fmtQty = (v) =>
     ? "—"
     : Number(v).toLocaleString("en-US", { maximumFractionDigits: v >= 100 ? 2 : 6 });
 
+const OVERLAYS = [
+  { id: "ema", label: "EMA 9/21", color1: "#38bdf8", color2: "#f472b6" },
+  { id: "sma", label: "SMA 10/50", color1: "#facc15", color2: "#a78bfa" },
+  { id: "bb", label: "Bollinger", color1: "#64748b", color2: "#64748b" },
+];
+
 export default function ChartPage() {
+  const toast = useToast();
   const [symbol, setSymbol] = useState("BTCUSDT");
-  // NOTE: không đặt tên state là `interval`/`setInterval` — nó shadow global
-  // setInterval và làm hỏng polling (interval trở thành Promise sau tick đầu)
+  // NOTE: không đặt tên state là `interval` — shadow global setInterval
   const [tf, setTf] = useState("5m");
   const [symbols, setSymbols] = useState(["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"]);
   const [trades, setTrades] = useState([]);
   const [price, setPrice] = useState(null);
-  const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
   const [account, setAccount] = useState(null);
+  const [on, setOn] = useState({ ema: true, sma: false, bb: false });
+  const [rawCandles, setRawCandles] = useState([]);
   const chartEl = useRef(null);
   const chartRef = useRef(null);
   const seriesRef = useRef(null);
+  const volumeRef = useRef(null);
+  const overlayRefs = useRef({}); // key → series
   const markersRef = useRef(null);
 
   // init chart once (lightweight-charts v5 API)
@@ -63,6 +75,12 @@ export default function ChartPage() {
       borderVisible: false,
     });
     seriesRef.current = series;
+    const vol = chart.addSeries(HistogramSeries, {
+      priceFormat: { type: "volume" },
+      priceScaleId: "vol",
+    });
+    chart.priceScale("vol").applyOptions({ scaleMargins: { top: 0.85, bottom: 0 } });
+    volumeRef.current = vol;
     markersRef.current = createSeriesMarkers(series, []);
     return () => chart.remove();
   }, []);
@@ -77,7 +95,7 @@ export default function ChartPage() {
       .catch(() => {});
   }, []);
 
-  // load testnet account balances (live mode) — testnet cấp nhiều coin
+  // load testnet account balances (live mode)
   useEffect(() => {
     let alive = true;
     const loadAcc = async () => {
@@ -112,13 +130,20 @@ export default function ChartPage() {
           close: k.close,
         }));
         if (candles.length === 0) {
-          setErr(`No candles returned for ${symbol}`);
+          setErr(`Không có nến cho ${symbol}`);
           return;
         }
         seriesRef.current.setData(candles);
         setPrice(candles[candles.length - 1].close);
+        setRawCandles(c.candles || []);
+        // volume histogram
+        const vols = (c.candles || []).map((k) => ({
+          time: Math.floor(k.open_time / 1000),
+          value: k.volume,
+          color: k.close >= k.open ? "rgba(22,185,129,0.35)" : "rgba(244,63,94,0.35)",
+        }));
+        volumeRef.current.setData(vols);
         setTrades(tr.trades || []);
-        // trade markers on this symbol (sorted by time, v5 requirement)
         const marks = tr.trades
           .filter((t) => t.symbol === symbol)
           .map((t) => ({
@@ -133,8 +158,6 @@ export default function ChartPage() {
         setErr("");
       } catch (e) {
         setErr(e.message);
-      } finally {
-        setLoading(false);
       }
     };
     load();
@@ -144,6 +167,54 @@ export default function ChartPage() {
       clearInterval(t);
     };
   }, [symbol, tf]);
+
+  // overlay indicators — vẽ lại khi candles hoặc toggle đổi
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart || rawCandles.length === 0) return;
+    const times = rawCandles.map((k) => Math.floor(k.open_time / 1000));
+    const closes = rawCandles.map((k) => k.close);
+
+    // xóa overlay cũ
+    for (const key of Object.keys(overlayRefs.current)) {
+      try { chart.removeSeries(overlayRefs.current[key]); } catch {}
+      delete overlayRefs.current[key];
+    }
+
+    const draw = (key, values, color, width = 1.4) => {
+      const offset = times.length - values.length;
+      const data = values
+        .map((v, i) => ({ time: times[i + offset], value: v }))
+        .filter((d) => d.time != null);
+      const s = chart.addSeries(LineSeries, {
+        color,
+        lineWidth: width,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+      });
+      s.setData(data);
+      overlayRefs.current[key] = s;
+    };
+
+    if (on.ema) {
+      const e9 = emaSeries(closes, 9);
+      const e21 = emaSeries(closes, 21);
+      draw("ema9", e9, OVERLAYS[0].color1, 1.5);
+      draw("ema21", e21, OVERLAYS[0].color2, 1.5);
+    }
+    if (on.sma) {
+      const s10 = smaSeries(closes, 10);
+      const s50 = smaSeries(closes, 50);
+      draw("sma10", s10, OVERLAYS[1].color1, 1.5);
+      draw("sma50", s50, OVERLAYS[1].color2, 1.5);
+    }
+    if (on.bb) {
+      const { upper, lower } = bbSeries(closes, 20, 2);
+      draw("bbu", upper, OVERLAYS[2].color1, 1);
+      draw("bbl", lower, OVERLAYS[2].color2, 1);
+    }
+  }, [rawCandles, on]);
 
   return (
     <div className="space-y-4 max-w-[1400px]">
@@ -175,6 +246,28 @@ export default function ChartPage() {
           <span className="text-lg font-semibold text-white tabular">{fmtUSD(price)}</span>
         )}
         {err && <span className="text-xs text-rose-400">{err}</span>}
+      </div>
+
+      {/* indicator toggles */}
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-[11px] text-zinc-600">Indicators:</span>
+        {OVERLAYS.map((o) => (
+          <button
+            key={o.id}
+            onClick={() => setOn((prev) => ({ ...prev, [o.id]: !prev[o.id] }))}
+            className={`text-[11px] px-2.5 py-1 rounded-lg border flex items-center gap-1.5 transition-colors ${
+              on[o.id]
+                ? "border-amber-400/40 bg-amber-400/10 text-amber-300"
+                : "border-[#1e2430] text-zinc-500 hover:text-white"
+            }`}
+          >
+            <span
+              className="inline-block w-2 h-2 rounded-full"
+              style={{ background: on[o.id] ? o.color1 : "#3f4757" }}
+            />
+            {o.label}
+          </button>
+        ))}
       </div>
 
       {/* testnet balances (live mode) */}
@@ -273,7 +366,7 @@ export default function ChartPage() {
             </tbody>
           </table>
           {trades.filter((t) => t.symbol === symbol).length === 0 && (
-            <p className="text-center text-zinc-500 py-4 text-xs">No trades on this symbol yet</p>
+            <p className="text-center text-zinc-500 py-4 text-xs">Chưa có lệnh nào trên symbol này</p>
           )}
         </div>
       </div>

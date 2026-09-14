@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { RefreshCw, Search } from "lucide-react";
+import { Download, RefreshCw, Search } from "lucide-react";
 import { api, fmtUSD, fmtPct, fmtNum, fmtDate, pnlColor } from "@/lib/api";
 import { useToast } from "@/components/Toast";
 
@@ -75,6 +75,34 @@ export default function TradesPage() {
     });
   }, [trades, filter, strategyFilter, search]);
 
+  const exportCSV = () => {
+    if (shown.length === 0) {
+      toast.err("Không có lệnh nào để export");
+      return;
+    }
+    const head = ["id", "symbol", "status", "mode", "strategy", "qty", "entry_price", "exit_price", "stop_loss", "take_profit", "stake", "pnl", "pnl_pct", "exit_reason", "opened_at", "closed_at"];
+    const esc = (v) => {
+      const s = v == null ? "" : String(v);
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const lines = [head.join(",")];
+    for (const t of shown) {
+      lines.push([
+        t.id, t.symbol, t.status, t.mode, t.strategy, t.qty, t.entry_price,
+        t.exit_price ?? "", t.stop_loss, t.take_profit, t.stake, t.pnl,
+        t.pnl_pct, t.exit_reason ?? "", t.opened_at, t.closed_at ?? "",
+      ].map(esc).join(","));
+    }
+    const blob = new Blob(["\uFEFF" + lines.join("\n")], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `trades-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast.ok(`Exported ${shown.length} lệnh ra CSV`);
+  };
+
   const prices = status?.last_cycle?.prices || {};
 
   return (
@@ -117,6 +145,9 @@ export default function TradesPage() {
               className="w-32 bg-[#11151d] border border-[#1e2430] rounded-lg pl-7 pr-2 py-1.5 text-xs text-white outline-none focus:border-amber-400/50"
             />
           </div>
+          <button onClick={exportCSV} className="panel px-3 py-1.5 text-sm text-zinc-300 hover:text-white flex items-center gap-2" title="Export các lệnh đang hiển thị ra CSV">
+            <Download size={13} /> CSV
+          </button>
           <button onClick={load} className="panel px-3 py-1.5 text-sm text-zinc-300 hover:text-white flex items-center gap-2">
             <RefreshCw size={13} /> Refresh
           </button>
