@@ -1,6 +1,8 @@
 // Package ta — technical indicators (same math as the Python version).
 package ta
 
+import "math"
+
 // SMA returns the simple moving average of the last period values.
 func SMA(values []float64, period int) (float64, bool) {
 	n := len(values)
@@ -151,4 +153,97 @@ func ATR(highs, lows, closes []float64, period int) (float64, bool) {
 		a = (a*(p-1) + trs[i]) / p
 	}
 	return a, true
+}
+
+// ADX returns (adx, +DI, −DI) using Wilder smoothing.
+func ADX(highs, lows, closes []float64, period int) (float64, float64, float64, bool) {
+	n := len(closes)
+	if len(highs) != n || len(lows) != n || n < 2*period+1 {
+		return 0, 0, 0, false
+	}
+	trs := make([]float64, n-1)
+	pdm := make([]float64, n-1)
+	ndm := make([]float64, n-1)
+	for i := 1; i < n; i++ {
+		upMove := highs[i] - highs[i-1]
+		downMove := lows[i-1] - lows[i]
+		if upMove > downMove && upMove > 0 {
+			pdm[i-1] = upMove
+		}
+		if downMove > upMove && downMove > 0 {
+			ndm[i-1] = downMove
+		}
+		tr := highs[i] - lows[i]
+		if v := highs[i] - closes[i-1]; v > tr {
+			tr = v
+		}
+		if v := lows[i] - closes[i-1]; -v > tr {
+			tr = -v
+		}
+		trs[i-1] = tr
+	}
+	// Wilder smoothing
+	smTR := 0.0
+	smPDM := 0.0
+	smNDM := 0.0
+	for i := 0; i < period; i++ {
+		smTR += trs[i]
+		smPDM += pdm[i]
+		smNDM += ndm[i]
+	}
+	dx := make([]float64, 0, n-1-2*period)
+	p := float64(period)
+	for i := period; i < len(trs); i++ {
+		smTR = smTR - smTR/p + trs[i]
+		smPDM = smPDM - smPDM/p + pdm[i]
+		smNDM = smNDM - smNDM/p + ndm[i]
+		dxv := 0.0
+		if smTR > 0 {
+			pdi := smPDM / smTR * 100
+			ndi := smNDM / smTR * 100
+			if pdi+ndi > 0 {
+				dxv = math.Abs(pdi-ndi) / (pdi + ndi) * 100
+			}
+		}
+		dx = append(dx, dxv)
+	}
+	if len(dx) < period {
+		return 0, 0, 0, false
+	}
+	adx := 0.0
+	for i := 0; i < period; i++ {
+		adx += dx[i]
+	}
+	adx /= p
+	for _, v := range dx[period:] {
+		adx = (adx*(p-1) + v) / p
+	}
+	dip := 0.0
+	dim := 0.0
+	if smTR > 0 {
+		dip = smPDM / smTR * 100
+		dim = smNDM / smTR * 100
+	}
+	return adx, dip, dim, true
+}
+
+// Bollinger returns (mid, upper, lower, ok) for the last point.
+func Bollinger(values []float64, period int, mult float64) (float64, float64, float64, bool) {
+	n := len(values)
+	if period <= 0 || n < period {
+		return 0, 0, 0, false
+	}
+	win := values[n-period:]
+	mean := 0.0
+	for _, v := range win {
+		mean += v
+	}
+	mean /= float64(period)
+	variance := 0.0
+	for _, v := range win {
+		variance += (v - mean) * (v - mean)
+	}
+	variance /= float64(period)
+	sd := math.Sqrt(variance)
+	return mean, mean + mult*sd, mean - mult*sd, true
 }

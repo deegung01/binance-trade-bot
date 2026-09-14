@@ -3,30 +3,41 @@
 import { useEffect, useRef, useState } from "react";
 import {
   createChart,
+  createSeriesMarkers,
   CrosshairMode,
   LineStyle,
+  CandlestickSeries,
 } from "lightweight-charts";
 import { api, fmtUSD } from "@/lib/api";
 
 const INTERVALS = ["1m", "5m", "15m", "1h", "4h", "1d"];
 
+const fmtQty = (v) =>
+  v == null
+    ? "—"
+    : Number(v).toLocaleString("en-US", { maximumFractionDigits: v >= 100 ? 2 : 6 });
+
 export default function ChartPage() {
   const [symbol, setSymbol] = useState("BTCUSDT");
-  const [interval, setInterval] = useState("5m");
+  // NOTE: không đặt tên state là `interval`/`setInterval` — nó shadow global
+  // setInterval và làm hỏng polling (interval trở thành Promise sau tick đầu)
+  const [tf, setTf] = useState("5m");
   const [symbols, setSymbols] = useState(["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"]);
   const [trades, setTrades] = useState([]);
   const [price, setPrice] = useState(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
+  const [account, setAccount] = useState(null);
   const chartEl = useRef(null);
   const chartRef = useRef(null);
   const seriesRef = useRef(null);
+  const markersRef = useRef(null);
 
-  // init chart once
+  // init chart once (lightweight-charts v5 API)
   useEffect(() => {
     const chart = createChart(chartEl.current, {
       layout: {
-        background: { color: "transparent" },
+        background: { type: "solid", color: "transparent" },
         textColor: "#71767f",
         fontSize: 11,
       },
@@ -44,7 +55,7 @@ export default function ChartPage() {
       autoSize: true,
     });
     chartRef.current = chart;
-    const series = chart.addCandlestickSeries({
+    const series = chart.addSeries(CandlestickSeries, {
       upColor: "#16b981",
       downColor: "#f43f5e",
       wickUpColor: "#16b981",
@@ -52,6 +63,7 @@ export default function ChartPage() {
       borderVisible: false,
     });
     seriesRef.current = series;
+    markersRef.current = createSeriesMarkers(series, []);
     return () => chart.remove();
   }, []);
 
@@ -65,27 +77,48 @@ export default function ChartPage() {
       .catch(() => {});
   }, []);
 
+  // load testnet account balances (live mode) — testnet cấp nhiều coin
+  useEffect(() => {
+    let alive = true;
+    const loadAcc = async () => {
+      try {
+        const a = await api("/account");
+        if (alive) setAccount(a);
+      } catch {}
+    };
+    loadAcc();
+    const t = setInterval(loadAcc, 20000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, []);
+
   // load candles + trades
   useEffect(() => {
     let alive = true;
     const load = async () => {
       try {
         const [c, tr] = await Promise.all([
-          api(`/candles?symbol=${symbol}&interval=${interval}&limit=300`),
+          api(`/candles?symbol=${symbol}&interval=${tf}&limit=300`),
           api(`/trades?limit=200`),
         ]);
         if (!alive) return;
-        const candles = c.candles.map((k) => ({
+        const candles = (c.candles || []).map((k) => ({
           time: Math.floor(k.open_time / 1000),
           open: k.open,
           high: k.high,
           low: k.low,
           close: k.close,
         }));
+        if (candles.length === 0) {
+          setErr(`No candles returned for ${symbol}`);
+          return;
+        }
         seriesRef.current.setData(candles);
         setPrice(candles[candles.length - 1].close);
-        setTrades(tr.trades);
-        // trade markers on this symbol
+        setTrades(tr.trades || []);
+        // trade markers on this symbol (sorted by time, v5 requirement)
         const marks = tr.trades
           .filter((t) => t.symbol === symbol)
           .map((t) => ({
@@ -94,8 +127,9 @@ export default function ChartPage() {
             color: "#38bdf8",
             shape: "arrowUp",
             text: `BUY ${fmtUSD(t.entry_price)}`,
-          }));
-        seriesRef.current.setMarkers(marks);
+          }))
+          .sort((a, b) => a.time - b.time);
+        markersRef.current.setMarkers(marks);
         setErr("");
       } catch (e) {
         setErr(e.message);
@@ -109,7 +143,7 @@ export default function ChartPage() {
       alive = false;
       clearInterval(t);
     };
-  }, [symbol, interval]);
+  }, [symbol, tf]);
 
   return (
     <div className="space-y-4 max-w-[1400px]">
@@ -128,9 +162,9 @@ export default function ChartPage() {
           {INTERVALS.map((i) => (
             <button
               key={i}
-              onClick={() => setInterval(i)}
+              onClick={() => setTf(i)}
               className={`px-3 py-1.5 text-xs ${
-                interval === i ? "bg-amber-400/15 text-amber-300" : "text-zinc-400 hover:text-white"
+                tf === i ? "bg-amber-400/15 text-amber-300" : "text-zinc-400 hover:text-white"
               }`}
             >
               {i}
@@ -142,6 +176,51 @@ export default function ChartPage() {
         )}
         {err && <span className="text-xs text-rose-400">{err}</span>}
       </div>
+
+      {/* testnet balances (live mode) */}
+      {account?.live && account.balances?.length > 0 && (
+        <div className="panel p-4">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-sm font-medium text-white">
+              Testnet account <span className="text-emerald-400 text-xs ml-1">LIVE</span>
+            </h2>
+            <span className="text-sm font-semibold text-white tabular">
+              {fmtUSD(account.total_usdt)}{" "}
+              <span className="text-xs text-zinc-500 font-normal">total ({account.balances.length} coins)</span>
+            </span>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-zinc-500 border-b border-[#1e2430]">
+                  <th className="text-left py-2 font-normal">Asset</th>
+                  <th className="text-right font-normal">Free</th>
+                  <th className="text-right font-normal">Locked</th>
+                  <th className="text-right font-normal">Price (USDT)</th>
+                  <th className="text-right font-normal">Value (USDT)</th>
+                  <th className="text-right font-normal pr-2">%</th>
+                </tr>
+              </thead>
+              <tbody>
+                {account.balances.map((b) => {
+                  const total = account.total_usdt || 0;
+                  const pct = total > 0 ? (b.usdt_value / total) * 100 : 0;
+                  return (
+                    <tr key={b.asset} className="border-b border-[#161c28] hover:bg-white/[0.02]">
+                      <td className="py-1.5 text-white font-medium">{b.asset}</td>
+                      <td className="text-right tabular text-zinc-300">{fmtQty(b.free)}</td>
+                      <td className="text-right tabular text-zinc-500">{b.locked > 0 ? fmtQty(b.locked) : "—"}</td>
+                      <td className="text-right tabular text-zinc-400">{b.price ? fmtUSD(b.price, b.price >= 100 ? 2 : 4) : "—"}</td>
+                      <td className="text-right tabular text-zinc-300">{fmtUSD(b.usdt_value)}</td>
+                      <td className="text-right tabular text-zinc-500 pr-2">{pct.toFixed(1)}%</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       <div className="panel p-2">
         <div ref={chartEl} className="h-[480px] w-full" />

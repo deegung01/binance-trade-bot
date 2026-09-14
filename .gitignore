@@ -14,3 +14,7 @@ frontend/.vercel
 .DS_Store
 *.log
 .env
+
+# Windows build artifacts
+/app.exe
+/app~

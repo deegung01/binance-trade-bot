@@ -12,6 +12,7 @@ import (
 	"binance-trade-bot/internal/config"
 	"binance-trade-bot/internal/engine"
 	"binance-trade-bot/internal/exchange"
+	"binance-trade-bot/internal/regime"
 	"binance-trade-bot/internal/strategy"
 )
 
@@ -31,6 +32,7 @@ func Mux() *http.ServeMux {
 	mux.HandleFunc("/api/sell/", handleSell)
 	mux.HandleFunc("/api/reset", handleReset)
 	mux.HandleFunc("/api/account", handleAccount)
+	mux.HandleFunc("/api/regimes", handleRegimes)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]string{"status": "ok"})
 	})
@@ -148,16 +150,60 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 		openOut = append(openOut, tradeJSON(t))
 	}
 
+	// live mode: số dư thật trên testnet (nhiều coin) thay vì ví paper
+	liveBalances := []map[string]any{}
+	liveEquity, liveCash := 0.0, 0.0
+	if cfg.TradingMode == "live" && cfg.BinanceAPIKey != "" {
+		client := exchange.NewClient(exchange.TestnetBase, cfg.BinanceAPIKey, cfg.BinanceAPISecret)
+		if acc, err := client.Account(); err == nil {
+			if raw, ok := acc["balances"].([]any); ok {
+				allPrices := map[string]float64{}
+				if all, err2 := client.AllPrices(); err2 == nil {
+					allPrices = all
+				}
+				rows, total := exchange.ValueBalances(raw, allPrices)
+				liveEquity = total
+				for _, row := range rows {
+					if row.Asset == "USDT" {
+						liveCash = row.Free + row.Locked
+					}
+					liveBalances = append(liveBalances, map[string]any{
+						"asset": row.Asset, "free": row.Free, "locked": row.Locked,
+						"price": row.Price, "usdt_value": round2(row.USDTValue),
+					})
+				}
+				// baseline: equity testnet lần đầu vào live mode → profit đếm từ đây
+				if liveEquity > 0 && (st.LiveBaseline == 0 || st.LiveBaseline < liveEquity*0.5 || st.LiveBaseline > liveEquity*2) {
+					st.LiveBaseline = liveEquity
+					_ = config.SaveState(st)
+				}
+			}
+		}
+	}
+	if liveEquity > 0 {
+		equity = liveEquity
+		posVal = liveEquity - liveCash
+		if st.LiveBaseline > 0 {
+			startBal = st.LiveBaseline
+		}
+	}
+
+	cashOut := st.Cash
+	if liveCash > 0 {
+		cashOut = liveCash
+	}
+
 	writeJSON(w, map[string]any{
 		"running":        cfg.BotRunning,
 		"mode":           cfg.TradingMode,
 		"last_cycle":     last,
 		"equity":         round2(equity),
-		"cash":           round2(st.Cash),
+		"cash":           round2(cashOut),
 		"positions_value": round2(posVal),
 		"start_balance":  startBal,
-		"profit":         round2(equity - startBal),
-		"profit_pct":     round2((equity - startBal) / startBal * 100),
+		"profit":        round2(equity - startBal),
+		"profit_pct":    round2((equity - startBal) / startBal * 100),
+		"balances":      liveBalances,
 		"open_trades":    openOut,
 		"stats": map[string]any{
 			"total_trades":  len(db.Trades),
@@ -487,6 +533,25 @@ func handleReset(w http.ResponseWriter, r *http.Request) {
 // account (live mode)
 // ---------------------------------------------------------------------------
 
+// regimes (adaptive engine)
+// ---------------------------------------------------------------------------
+
+func handleRegimes(w http.ResponseWriter, r *http.Request) {
+	snaps := engine.Get().Regimes()
+	out := make([]map[string]any, 0, len(snaps))
+	for _, sn := range snaps {
+		id, label := regime.StrategyFor(sn.Regime)
+		out = append(out, map[string]any{
+			"symbol": sn.Symbol, "regime": sn.Regime, "prev": sn.Prev,
+			"changed": sn.Changed, "confidence": sn.Confidence,
+			"metrics": sn.Metrics,
+			"strategy": id, "strategy_label": label,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return str(out[i]["symbol"], "") < str(out[j]["symbol"], "") })
+	writeJSON(w, map[string]any{"regimes": out})
+}
+
 func handleAccount(w http.ResponseWriter, r *http.Request) {
 	cfg := config.LoadConfig()
 	if cfg.TradingMode != "live" || cfg.BinanceAPIKey == "" {
@@ -500,18 +565,20 @@ func handleAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	balances := []map[string]any{}
+	total := 0.0
 	if bs, ok := acc["balances"].([]any); ok {
-		for _, b := range bs {
-			bm, _ := b.(map[string]any)
-			free, _ := strconv.ParseFloat(str(bm["free"], "0"), 64)
-			locked, _ := strconv.ParseFloat(str(bm["locked"], "0"), 64)
-			if free > 0 || locked > 0 {
-				balances = append(balances, map[string]any{
-					"asset": bm["asset"], "free": free, "locked": locked,
-				})
-			}
+		allPrices := map[string]float64{}
+		if all, err2 := client.AllPrices(); err2 == nil {
+			allPrices = all
 		}
-		sort.Slice(balances, func(i, j int) bool { return str(balances[i]["asset"], "") < str(balances[j]["asset"], "") })
+		rows, tot := exchange.ValueBalances(bs, allPrices)
+		total = tot
+		for _, row := range rows {
+			balances = append(balances, map[string]any{
+				"asset": row.Asset, "free": row.Free, "locked": row.Locked,
+				"price": row.Price, "usdt_value": round2(row.USDTValue),
+			})
+		}
 	}
-	writeJSON(w, map[string]any{"live": true, "balances": balances})
+	writeJSON(w, map[string]any{"live": true, "total_usdt": round2(total), "balances": balances})
 }

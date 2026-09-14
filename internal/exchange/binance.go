@@ -114,6 +114,86 @@ func (c *Client) TickerPrice(symbol string) (float64, error) {
 	return strconv.ParseFloat(out.Price, 64)
 }
 
+// AllPrices returns every symbol's latest price (USDT valuation of balances).
+func (c *Client) AllPrices() (map[string]float64, error) {
+	var raw []struct {
+		Symbol string `json:"symbol"`
+		Price  string `json:"price"`
+	}
+	if err := c.get("/ticker/price", url.Values{}, &raw); err != nil {
+		return nil, err
+	}
+	out := make(map[string]float64, len(raw))
+	for _, p := range raw {
+		if f, err := strconv.ParseFloat(p.Price, 64); err == nil {
+			out[p.Symbol] = f
+		}
+	}
+	return out, nil
+}
+
+// Balance is one asset row of the testnet account.
+type Balance struct {
+	Asset  string
+	Free   float64
+	Locked float64
+}
+
+// ValuedBalance is a balance priced in USDT.
+type ValuedBalance struct {
+	Asset     string
+	Free      float64
+	Locked    float64
+	Price     float64
+	USDTValue float64
+}
+
+func toStr(v any) string {
+	s, _ := v.(string)
+	return s
+}
+
+// parseBalances decodes the raw /account "balances" array (drops zero rows).
+func parseBalances(raw []any) []Balance {
+	out := []Balance{}
+	for _, b := range raw {
+		bm, _ := b.(map[string]any)
+		free, _ := strconv.ParseFloat(toStr(bm["free"]), 64)
+		locked, _ := strconv.ParseFloat(toStr(bm["locked"]), 64)
+		asset := toStr(bm["asset"])
+		if free <= 0 && locked <= 0 {
+			continue
+		}
+		out = append(out, Balance{Asset: asset, Free: free, Locked: locked})
+	}
+	return out
+}
+
+// ValueBalances prices EVERY balance in USDT (USDT = 1; other assets via the
+// <ASSET>USDT pair) — testnet seeds the account with many coins, so equity
+// must be the total USDT value of all of them. Returns rows sorted by value
+// (desc) plus the account total.
+func ValueBalances(raw []any, prices map[string]float64) ([]ValuedBalance, float64) {
+	rows := []ValuedBalance{}
+	total := 0.0
+	for _, b := range parseBalances(raw) {
+		price := 0.0
+		if b.Asset == "USDT" {
+			price = 1
+		} else if p, ok := prices[b.Asset+"USDT"]; ok {
+			price = p
+		}
+		val := (b.Free + b.Locked) * price
+		total += val
+		rows = append(rows, ValuedBalance{
+			Asset: b.Asset, Free: b.Free, Locked: b.Locked,
+			Price: price, USDTValue: val,
+		})
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].USDTValue > rows[j].USDTValue })
+	return rows, total
+}
+
 // ExchangeSymbols returns TRADING symbols with the given quote asset.
 func (c *Client) ExchangeSymbols(quote string) ([]string, error) {
 	var raw struct {

@@ -296,9 +296,19 @@ func All() map[string]Strategy {
 	}
 }
 
+// AdaptiveMeta describes the regime engine for the dashboard.
+type AdaptiveMeta struct {
+	ID     string `json:"id"`
+	Label  string `json:"label"`
+}
+
 // Get returns a strategy by name (falls back to sma_cross).
 func Get(name string) Strategy {
 	all := All()
+	if name == "adaptive" {
+		// regime engine — engine.go xử lý chọn strategy theo regime từng symbol
+		return all["ema_cross"]
+	}
 	if s, ok := all[name]; ok {
 		return s
 	}
@@ -314,10 +324,16 @@ type Info struct {
 // List returns metadata for the dashboard.
 func List() []Info {
 	all := All()
-	ids := []string{"sma_cross", "ema_cross", "rsi_revert", "macd", "adaptive_grid"}
+	ids := []string{"adaptive", "sma_cross", "ema_cross", "rsi_revert", "macd", "adaptive_grid"}
 	out := make([]Info, 0, len(ids))
 	for _, id := range ids {
-		out = append(out, Info{ID: id, Label: all[id].Label()})
+		label := ""
+		if id == "adaptive" {
+			label = "Adaptive Regime Engine (auto-select per market)"
+		} else {
+			label = all[id].Label()
+		}
+		out = append(out, Info{ID: id, Label: label})
 	}
 	return out
 }

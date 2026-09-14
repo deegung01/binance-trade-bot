@@ -44,6 +44,7 @@ type State struct {
 	TradeSeq     int64              `json:"trade_seq"`
 	InitBalance  float64            `json:"init_balance"`
 	StartedAt    string             `json:"started_at"`
+	LiveBaseline float64            `json:"live_baseline,omitempty"` // equity testnet khi vào live mode lần đầu
 }
 
 // Position is an open paper position.
@@ -76,13 +77,16 @@ type Trade struct {
 	Meta         *TradeMeta `json:"meta"`
 }
 
-// TradeMeta holds grid/trailing runtime info.
+// TradeMeta holds grid/trailing/regime runtime info.
 type TradeMeta struct {
 	GridCount      int     `json:"grid_count"`
 	InitialStake   float64 `json:"initial_stake"`
 	LastAddPrice   float64 `json:"last_add_price"`
 	TrailActivated bool    `json:"trail_activated"`
 	TrailHigh      float64 `json:"trail_high"`
+	EntryRegime    string  `json:"entry_regime,omitempty"`
+	Converted      bool    `json:"converted,omitempty"`
+	VolTrailPct    float64 `json:"vol_trail_pct,omitempty"`
 }
 
 // OrderLog is an entry in the order activity feed.
@@ -290,11 +294,24 @@ func Mutate(fn func(c *collection)) error {
 }
 
 // Reset wipes everything (trades/logs/equity) and rebuilds the wallet.
+// Live-mode accounts (Binance testnet API) are NEVER paper-reset: the
+// testnet wallet is server-side at Binance, so we only clear local history
+// and keep the wallet fields untouched (they mirror the remote account).
 func Reset(seed Config) {
 	mu.Lock()
 	defer mu.Unlock()
+	prev := State{}
+	if b, err := os.ReadFile(statePath()); err == nil {
+		_ = json.Unmarshal(b, &prev)
+	}
 	_ = os.WriteFile(dbPath(), []byte("{}"), 0o644)
 	st := State{Cash: seed.StartBalance, Positions: map[string]Position{}, InitBalance: seed.StartBalance}
+	if seed.TradingMode == "live" {
+		st.Cash = prev.Cash
+		st.Positions = prev.Positions
+		st.InitBalance = prev.InitBalance
+		st.LiveBaseline = prev.LiveBaseline
+	}
 	b, _ := json.MarshalIndent(st, "", "  ")
 	_ = os.WriteFile(statePath(), b, 0o644)
 }

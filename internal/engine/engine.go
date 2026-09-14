@@ -10,6 +10,7 @@ import (
 
 	"binance-trade-bot/internal/config"
 	"binance-trade-bot/internal/exchange"
+	"binance-trade-bot/internal/regime"
 	"binance-trade-bot/internal/strategy"
 )
 
@@ -21,10 +22,12 @@ const (
 
 // Engine runs the trading cycle on a ticker.
 type Engine struct {
-	mu        sync.Mutex
-	lastCycle map[string]any
-	stopCh    chan struct{}
-	once      sync.Once
+	mu         sync.Mutex
+	lastCycle  map[string]any
+	stopCh     chan struct{}
+	once       sync.Once
+	regimes    map[string]regime.Snapshot // symbol → latest regime snapshot
+	regimesMu  sync.Mutex
 }
 
 var defaultEngine *Engine
@@ -32,9 +35,29 @@ var defaultEngine *Engine
 // Get returns the singleton engine.
 func Get() *Engine {
 	if defaultEngine == nil {
-		defaultEngine = &Engine{lastCycle: map[string]any{}}
+		defaultEngine = &Engine{
+			lastCycle: map[string]any{},
+			regimes:   map[string]regime.Snapshot{},
+		}
 	}
 	return defaultEngine
+}
+
+// Regimes returns a copy of the latest per-symbol regime snapshots.
+func (e *Engine) Regimes() map[string]regime.Snapshot {
+	e.regimesMu.Lock()
+	defer e.regimesMu.Unlock()
+	out := make(map[string]regime.Snapshot, len(e.regimes))
+	for k, v := range e.regimes {
+		out[k] = v
+	}
+	return out
+}
+
+func (e *Engine) setRegime(sym string, sn regime.Snapshot) {
+	e.regimesMu.Lock()
+	e.regimes[sym] = sn
+	e.regimesMu.Unlock()
 }
 
 // Start launches the loop in a goroutine.
@@ -103,9 +126,8 @@ func (e *Engine) Cycle() {
 	}
 
 	symbols := parseSymbols(cfg.TradingSymbols)
-	strat := strategy.Get(cfg.Strategy)
 
-	// 1) candles + prices
+	// 1) candles + prices + regimes
 	candles := map[string][]exchange.Candle{}
 	prices := map[string]float64{}
 	for _, sym := range symbols {
@@ -117,6 +139,17 @@ func (e *Engine) Cycle() {
 		candles[sym] = cd
 		if len(cd) > 0 {
 			prices[sym] = cd[len(cd)-1].Close
+		}
+		// regime classification mỗi cycle
+		sn := regime.Classify(sym, cd)
+		if prev, ok := e.Regimes()[sym]; ok {
+			sn.Prev = prev.Regime
+			sn.Changed = prev.Regime != sn.Regime
+		}
+		e.setRegime(sym, sn)
+		if sn.Changed {
+			e.Log("INFO", "regime", fmt.Sprintf("%s: %s → %s (ADX %.1f, ATR%% %.2f, conf %.2f)",
+				sym, sn.Prev, sn.Regime, sn.Metrics.ADX, sn.Metrics.ATRRatio, sn.Confidence))
 		}
 	}
 
@@ -136,7 +169,7 @@ func (e *Engine) Cycle() {
 		e.manageTrade(cfg, mode, &st, t, price, candles[t.Symbol])
 	}
 
-	// 3) entries
+	// 3) entries — adaptive: strategy theo regime từng symbol
 	db = config.LoadDB()
 	openSyms := map[string]bool{}
 	openCount := 0
@@ -146,42 +179,69 @@ func (e *Engine) Cycle() {
 			openCount++
 		}
 	}
-	if openCount < cfg.MaxOpenTrades {
-		for _, sym := range symbols {
-			if openSyms[sym] {
+	adaptive := cfg.Strategy == "adaptive"
+	for _, sym := range symbols {
+		if openSyms[sym] {
+			continue
+		}
+		cd := candles[sym]
+		if len(cd) == 0 {
+			continue
+		}
+		stratID := cfg.Strategy
+		if adaptive {
+			if sn, ok := e.Regimes()[sym]; ok {
+				id, _ := regime.StrategyFor(sn.Regime)
+				stratID = id
+			}
+		}
+		// trend_down: long-only → không vào lệnh mới
+		if adaptive {
+			if sn, ok := e.Regimes()[sym]; ok && sn.Regime == regime.TrendDown {
 				continue
 			}
-			cd := candles[sym]
-			if len(cd) == 0 {
-				continue
-			}
-			sig := strat.EntrySignal(cd)
-			if sig == nil {
-				continue
-			}
-			price := prices[sym]
-			stake := e.stakeFor(cfg, st)
-			if stake <= 0 {
-				e.Log("WARN", "risk", "stake is 0, skipping entry")
-				break
-			}
-			e.openTrade(cfg, mode, &st, sym, stake, price, cfg.Strategy, sig.Reason)
-			openSyms[sym] = true
-			openCount++
-			if openCount >= cfg.MaxOpenTrades {
-				break
-			}
+		}
+		strat := strategy.Get(stratID)
+		sig := strat.EntrySignal(cd)
+		if sig == nil {
+			continue
+		}
+		price := prices[sym]
+		stake := e.stakeFor(cfg, st)
+		if stake <= 0 {
+			e.Log("WARN", "risk", "stake is 0, skipping entry")
+			break
+		}
+		e.openTrade(cfg, mode, &st, sym, stake, price, stratID, sig.Reason)
+		openSyms[sym] = true
+		openCount++
+		if openCount >= cfg.MaxOpenTrades {
+			break
 		}
 	}
 
 	// 4) equity snapshot
 	_ = config.SaveState(st)
 	eq := equityOf(st, prices)
+	eqMode := mode
+	if mode == "live" {
+		// live equity = tổng giá trị USDT của MỌI coin trên testnet account
+		acc, err := e.liveClient(cfg).Account()
+		if err != nil {
+			e.Log("WARN", "account", fmt.Sprintf("account fetch failed: %v", err))
+		} else if raw, ok := acc["balances"].([]any); ok {
+			if all, err2 := client.AllPrices(); err2 == nil {
+				_, total := exchange.ValueBalances(raw, all)
+				eq = equityVal{Cash: total, PositionsValue: 0, Total: total}
+				eqMode = "live"
+			}
+		}
+	}
 	_ = config.Mutate(func(c *config.Collection) {
 		id := int64(len(c.Equity)) + 1
 		c.Equity = append(c.Equity, config.EquityPoint{
 			ID: id, TS: nowISO(), Equity: eq.Total, Cash: eq.Cash,
-			PositionsValue: eq.PositionsValue, Mode: mode,
+			PositionsValue: eq.PositionsValue, Mode: eqMode,
 		})
 	})
 
@@ -294,6 +354,20 @@ func (e *Engine) orderLog(symbol, action, mode string, qty, price *float64, stat
 	})
 }
 
+// persistMeta writes trade meta + SL/TP back to the store.
+func (e *Engine) persistMeta(t *config.Trade) {
+	_ = config.Mutate(func(c *config.Collection) {
+		for i := range c.Trades {
+			if c.Trades[i].ID == t.ID {
+				c.Trades[i].Meta = t.Meta
+				c.Trades[i].StopLoss = t.StopLoss
+				c.Trades[i].TakeProfit = t.TakeProfit
+				break
+			}
+		}
+	})
+}
+
 // createTrade writes a new open trade + buy order log row.
 func (e *Engine) createTrade(cfg config.Config, mode, symbol string, qty, price, stake, fee float64, stratName, reason string) {
 	sl := price * (1 - cfg.StopLossPct/100)
@@ -322,20 +396,62 @@ func (e *Engine) createTrade(cfg config.Config, mode, symbol string, qty, price,
 	e.Log("INFO", "trade", fmt.Sprintf("BUY %s qty=%.6f @ %.2f (%s)", symbol, qty, price, reason))
 }
 
-// manageTrade: trailing → exit checks → grid add.
+// manageTrade: regime transition → trailing → exit checks → grid add.
 func (e *Engine) manageTrade(cfg config.Config, mode string, st *config.State, t *config.Trade, price float64, candles []exchange.Candle) {
 	if t.Meta == nil {
 		t.Meta = &config.TradeMeta{InitialStake: t.Stake, TrailHigh: t.EntryPrice}
 	}
 
-	// 1) trailing stop (ratchet up only)
-	if cfg.TrailingStop {
+	// 0) ADAPTIVE: regime transition rules cho lệnh đang mở
+	if cfg.Strategy == "adaptive" {
+		sn, ok := e.Regimes()[t.Symbol]
+		if !ok {
+			sn = regime.Classify(t.Symbol, candles)
+		}
+		if t.Meta.EntryRegime == "" {
+			t.Meta.EntryRegime = string(sn.Regime)
+			e.persistMeta(t)
+		}
+		entryRegime := regime.Regime(t.Meta.EntryRegime)
+		nowRegime := sn.Regime
+		if nowRegime != entryRegime || t.Meta.Converted {
+			dec := regime.OnTransition(entryRegime, nowRegime, price > t.EntryPrice)
+			if dec.Action == "exit" {
+				e.Log("INFO", "regime", fmt.Sprintf("%s %s: %s", t.Symbol, dec.Action, dec.Reason))
+				e.closeTrade(cfg, mode, st, t, price, "regime_shift:"+string(nowRegime))
+				return
+			}
+			if dec.Action == "convert" && !t.Meta.Converted {
+				// sideways lệnh long có lãi → trend_up: giữ, nới TP, trailing theo vol
+				t.Meta.Converted = true
+				t.Meta.EntryRegime = string(nowRegime)
+				// nới TP theo trend: +1 R thêm (gap TP × 1.5)
+				tpGap := (t.TakeProfit - t.EntryPrice) / t.EntryPrice
+				if tpGap > 0 {
+					t.TakeProfit = t.EntryPrice * (1 + tpGap*1.5)
+				}
+				// BẬT trailing theo biến động hiện tại
+				trailPct := regime.TrailingParams(nowRegime, sn.Metrics.ATRRatio)
+				t.Meta.VolTrailPct = trailPct
+				e.Log("INFO", "regime", fmt.Sprintf("%s: CONVERT %s→%s — hold & trail %.2f%%, TP nới %.2f",
+					t.Symbol, entryRegime, nowRegime, trailPct, t.TakeProfit))
+				e.persistMeta(t)
+			}
+		}
+	}
+
+	// 1) trailing stop (ratchet up only) — adaptive: distance theo volatility
+	if cfg.TrailingStop || t.Meta.VolTrailPct > 0 {
+		trailPct := cfg.TrailingStopPct
+		if t.Meta.VolTrailPct > 0 {
+			trailPct = t.Meta.VolTrailPct
+		}
 		meta := t.Meta
 		if price > meta.TrailHigh {
 			meta.TrailHigh = price
 		}
 		gainPct := (price - t.EntryPrice) / t.EntryPrice
-		trail := cfg.TrailingStopPct / 100
+		trail := trailPct / 100
 		if !meta.TrailActivated && gainPct >= trail*2 {
 			meta.TrailActivated = true
 		}
@@ -343,19 +459,12 @@ func (e *Engine) manageTrade(cfg config.Config, mode string, st *config.State, t
 			newSL := meta.TrailHigh * (1 - trail)
 			if newSL > t.StopLoss {
 				t.StopLoss = newSL
-				e.Log("INFO", "trail", fmt.Sprintf("TRAIL %s: SL raised to %.4f (high %.4f)", t.Symbol, newSL, meta.TrailHigh))
+				e.Log("INFO", "trail", fmt.Sprintf("TRAIL %s: SL raised to %.4f (high %.4f, %.2f%%)",
+					t.Symbol, newSL, meta.TrailHigh, trailPct))
 			}
 		}
 		// persist trailing state
-		_ = config.Mutate(func(c *config.Collection) {
-			for i := range c.Trades {
-				if c.Trades[i].ID == t.ID {
-					c.Trades[i].Meta = meta
-					c.Trades[i].StopLoss = t.StopLoss
-					break
-				}
-			}
-		})
+		e.persistMeta(t)
 	}
 
 	// 2) exits

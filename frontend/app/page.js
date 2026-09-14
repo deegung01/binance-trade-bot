@@ -20,6 +20,11 @@ import {
 import { api, fmtUSD, fmtPct, fmtNum, fmtDate, fmtTime, pnlColor } from "@/lib/api";
 import EquityChart from "@/components/EquityChart";
 
+const fmtQty = (v) =>
+  v == null
+    ? "—"
+    : Number(v).toLocaleString("en-US", { maximumFractionDigits: v >= 100 ? 2 : 6 });
+
 function StatCard({ icon: Icon, label, value, sub, tone = "default" }) {
   return (
     <div className="panel p-4">
@@ -143,7 +148,16 @@ export default function Overview() {
           }
           tone={up ? "up" : "down"}
         />
-        <StatCard icon={Coins} label="Cash" value={fmtUSD(status.cash)} sub={`in positions ${fmtUSD(status.positions_value)}`} />
+        <StatCard
+          icon={Coins}
+          label={status.mode === "live" ? "USDT (testnet)" : "Cash"}
+          value={fmtUSD(status.cash)}
+          sub={
+            status.mode === "live"
+              ? `in coins ${fmtUSD(status.positions_value)}`
+              : `in positions ${fmtUSD(status.positions_value)}`
+          }
+        />
         <StatCard icon={Percent} label="Win rate" value={`${st.win_rate}%`} sub={`${st.wins}W / ${st.losses}L`} />
         <StatCard icon={Target} label="Total PnL (closed)" value={fmtUSD(st.total_pnl)} sub={`${st.closed_trades} closed trades`} />
         <StatCard icon={TrendingDown} label="Max drawdown" value={`${st.max_drawdown}%`} sub={`best ${fmtUSD(st.best_trade)} / worst ${fmtUSD(st.worst_trade)}`} />
@@ -195,6 +209,47 @@ export default function Overview() {
           )}
         </div>
       </div>
+
+      {/* balances (live mode — testnet có nhiều coin) */}
+      {status.mode === "live" && status.balances?.length > 0 && (
+        <div className="panel p-4">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-sm font-medium text-white">Testnet account balances</h2>
+            <span className="text-xs text-zinc-500">
+              {status.balances.length} coins · total {fmtUSD(status.equity)}
+            </span>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-zinc-500 border-b border-[#1e2430]">
+                  <th className="text-left py-2 font-normal">Asset</th>
+                  <th className="text-right font-normal">Free</th>
+                  <th className="text-right font-normal">Locked</th>
+                  <th className="text-right font-normal">Price (USDT)</th>
+                  <th className="text-right font-normal">Value (USDT)</th>
+                  <th className="text-right font-normal pr-2">%</th>
+                </tr>
+              </thead>
+              <tbody>
+                {status.balances.map((b) => {
+                  const pct = status.equity > 0 ? (b.usdt_value / status.equity) * 100 : 0;
+                  return (
+                    <tr key={b.asset} className="border-b border-[#161c28]">
+                      <td className="py-1.5 text-white font-medium">{b.asset}</td>
+                      <td className="text-right tabular text-zinc-300">{fmtQty(b.free)}</td>
+                      <td className="text-right tabular text-zinc-500">{b.locked > 0 ? fmtQty(b.locked) : "—"}</td>
+                      <td className="text-right tabular text-zinc-400">{b.price ? fmtUSD(b.price, b.price >= 100 ? 2 : 4) : "—"}</td>
+                      <td className="text-right tabular text-zinc-300">{fmtUSD(b.usdt_value)}</td>
+                      <td className="text-right tabular text-zinc-500 pr-2">{pct.toFixed(1)}%</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* market prices */}
       <div className="panel p-4">
