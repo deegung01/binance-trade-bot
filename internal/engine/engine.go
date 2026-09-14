@@ -2,8 +2,10 @@
 package engine
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -628,8 +630,16 @@ func (e *Engine) closeTrade(cfg config.Config, mode string, st *config.State, t 
 	e.Log("INFO", "trade", fmt.Sprintf("SELL %s @ %.2f reason=%s pnl=%+.2f", t.Symbol, price, reason, pnl))
 }
 
+// toFloat converts Binance order fields, which arrive as JSON strings.
 func toFloat(v any) float64 {
-	if f, ok := v.(float64); ok {
+	switch x := v.(type) {
+	case float64:
+		return x
+	case string:
+		f, _ := strconv.ParseFloat(x, 64)
+		return f
+	case json.Number:
+		f, _ := x.Float64()
 		return f
 	}
 	return 0
