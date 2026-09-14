@@ -122,7 +122,14 @@ func (e *Engine) Cycle() {
 	client := e.dataClient(cfg)
 	mode := cfg.TradingMode
 	if mode == "live" && (cfg.BinanceAPIKey == "" || cfg.BinanceAPISecret == "") {
-		mode = "paper"
+		// KHÔNG fallback về paper — user yêu cầu chỉ nhận trade qua API
+		// testnet thật. Thiếu keys → pause bot + log lỗi rõ ràng.
+		e.Log("ERROR", "engine", "live mode được chọn nhưng thiếu BINANCE_API_KEY/BINANCE_API_SECRET — bot PAUSED (không fallback paper)")
+		paused := cfg
+		paused.BotRunning = false
+		_ = config.SaveConfig(paused)
+		e.setLastCycle(map[string]any{"running": false, "ts": nowISO(), "mode": mode, "error": "missing API credentials in live mode — bot paused"})
+		return
 	}
 
 	symbols := parseSymbols(cfg.TradingSymbols)
@@ -656,7 +663,7 @@ func (e *Engine) ManualBuy(symbol string, stake float64) (float64, error) {
 	st := config.LoadState(cfg)
 	mode := cfg.TradingMode
 	if mode == "live" && (cfg.BinanceAPIKey == "" || cfg.BinanceAPISecret == "") {
-		mode = "paper"
+		return 0, fmt.Errorf("live mode thiếu API keys — lệnh bị từ chối (không fallback paper)")
 	}
 	client := e.dataClient(cfg)
 	price, err := client.TickerPrice(symbol)
@@ -674,7 +681,7 @@ func (e *Engine) ManualSell(tradeID int64) error {
 	st := config.LoadState(cfg)
 	mode := cfg.TradingMode
 	if mode == "live" && (cfg.BinanceAPIKey == "" || cfg.BinanceAPISecret == "") {
-		mode = "paper"
+		return fmt.Errorf("live mode thiếu API keys — lệnh bị từ chối (không fallback paper)")
 	}
 	var t *config.Trade
 	db := config.LoadDB()

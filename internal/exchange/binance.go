@@ -216,16 +216,9 @@ func (c *Client) ExchangeSymbols(quote string) ([]string, error) {
 	return out, nil
 }
 
-// --- signed requests (live mode) -------------------------------------------
-
-func (c *Client) signed(method, path string, params url.Values, out any) error {
-	if c.APIKey == "" || c.APISecret == "" {
-		return fmt.Errorf("missing API credentials")
-	}
-	params.Set("timestamp", strconv.FormatInt(time.Now().UnixMilli(), 10))
-	params.Set("recvWindow", "10000")
-
-	// signature over sorted query string
+// signaturePayload builds the sorted, percent-encoded query string that the
+// HMAC is computed over (exactly the string Binance requires signing).
+func signaturePayload(params url.Values) string {
 	keys := make([]string, 0, len(params))
 	for k := range params {
 		keys = append(keys, k)
@@ -238,9 +231,28 @@ func (c *Client) signed(method, path string, params url.Values, out any) error {
 		}
 		qs += url.QueryEscape(k) + "=" + url.QueryEscape(params.Get(k))
 	}
-	mac := hmac.New(sha256.New, []byte(c.APISecret))
-	mac.Write([]byte(qs))
-	params.Set("signature", hex.EncodeToString(mac.Sum(nil)))
+	return qs
+}
+
+// hmacHex returns the hex-encoded HMAC-SHA256 of payload keyed by secret.
+func hmacHex(secret, payload string) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(payload))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// --- signed requests (live mode) -------------------------------------------
+
+func (c *Client) signed(method, path string, params url.Values, out any) error {
+	if c.APIKey == "" || c.APISecret == "" {
+		return fmt.Errorf("missing API credentials")
+	}
+	params.Set("timestamp", strconv.FormatInt(time.Now().UnixMilli(), 10))
+	params.Set("recvWindow", "10000")
+
+	// signature over sorted query string
+	qs := signaturePayload(params)
+	params.Set("signature", hmacHex(c.APISecret, qs))
 
 	u := c.Base + path + "?" + params.Encode()
 	req, err := http.NewRequest(method, u, nil)
