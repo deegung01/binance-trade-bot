@@ -138,8 +138,14 @@ func Init(dir string) {
 }
 
 func defaultConfig() Config {
+	mode := envStr("TRADING_MODE", "paper")
+	// Chỉ nhận paper|live — mọi giá trị khác (kể cả tên biến bị dán nhầm
+	// trên Render) rơi về paper để không bao giờ đặt lệnh thật ngoài ý muốn.
+	if mode != "live" {
+		mode = "paper"
+	}
 	return Config{
-		TradingMode:     envStr("TRADING_MODE", "paper"),
+		TradingMode:     mode,
 		PaperDataSource: envStr("PAPER_DATA_SOURCE", "testnet"),
 		StartBalance:    envFloat("START_BALANCE", 10000),
 		TradingSymbols:  envStr("TRADING_SYMBOLS", "BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT"),
