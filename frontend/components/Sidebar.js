@@ -29,7 +29,6 @@ const NAV = [
   { href: "/logs", label: "Logs", icon: FileText },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
-
 export default function Sidebar() {
   const pathname = usePathname();
   const [status, setStatus] = useState(null);
