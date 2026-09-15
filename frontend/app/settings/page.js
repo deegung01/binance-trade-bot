@@ -1,25 +1,18 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { KeyRound, Save, ShieldAlert, Timer, ChevronDown } from "lucide-react";
-import { api } from "@/lib/api";
+import { useEffect, useState, useMemo } from "react";
+import { KeyRound, Save, ShieldAlert, Bot, Timer, ChevronDown, AlertTriangle } from "lucide-react";
+import { api, fmtUSD, fmtPct, fmtNum } from "@/lib/api";
 import { useToast } from "@/components/Toast";
+import EquityChart from "@/components/EquityChart";
 
 const inputCls = "input";
 const selectCls = "select";
 
-const SECTIONS = [
-  { id: "trading", label: "Trading", icon: "📈" },
-  { id: "risk", label: "Risk & Sizing", icon: "⚖️" },
-  { id: "guards", label: "Risk Guards", icon: ShieldAlert },
-  { id: "api", label: "API Keys", icon: KeyRound },
-  { id: "danger", label: "Danger Zone", icon: "⚠️" },
-];
-
 function Field({ label, hint, children }) {
   return (
     <div className="space-y-1">
-      <label className="label">{label}</label>
+      <div className="label">{label}</div>
       {children}
       {hint && <p className="hint">{hint}</p>}
     </div>
@@ -29,18 +22,20 @@ function Field({ label, hint, children }) {
 function Accordion({ title, icon: Icon, children, defaultOpen = true }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <details className="accordion group" open={defaultOpen}>
-      <summary className="accordion-header">
+    <div className="card overflow-hidden">
+      <button className="card-header w-full flex items-center justify-between hover:bg-white/5 transition-colors" onClick={() => setOpen(!open)}>
         <div className="flex items-center gap-2">
           {Icon && <Icon size={16} className="text-amber-400" />}
           <span className="font-medium text-white">{title}</span>
         </div>
-        <ChevronDown size={16} className="accordion-icon text-zinc-500 group-[details[open]]:rotate-180" />
-      </summary>
-      <div className="accordion-content p-5 pt-2 animate-[slidein_.2s_ease-out]">
-        {children}
-      </div>
-    </details>
+        <ChevronDown size={16} className={`accordion-icon text-zinc-500 ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open && (
+        <div className="card-body border-t border-[#1e2430] animate-[slidein_.2s_ease-out]">
+          {children}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -107,7 +102,7 @@ export default function SettingsPage() {
     setBusy(false);
   };
 
-  if (!cfg) return <div className="empty"><div className="empty-icon"><div className="skeleton w-12 h-12 rounded-full" /></div><div className="empty-title">Loading…</div></div>;
+  if (!cfg) return <div className="empty h-64"><div className="empty-icon"><div className="skeleton w-12 h-12 rounded-full" /></div><div className="empty-title">Loading…</div></div>;
 
   return (
     <div className="container section">
@@ -121,8 +116,7 @@ export default function SettingsPage() {
         </button>
       </div>
 
-      <div className="grid-auto-xl gap-6">
-        {/* TRADING */}
+      <div className="grid-auto-lg gap-4">
         <Accordion title="Trading" icon={Bot} defaultOpen={true}>
           <div className="grid-auto-sm lg:grid-cols-4">
             <Field label="Mode" hint="Paper = ví mô phỏng, Live = lệnh thật trên testnet">
@@ -160,8 +154,7 @@ export default function SettingsPage() {
           </div>
         </Accordion>
 
-        {/* RISK & SIZING */}
-        <Accordion title="Risk & Sizing" icon="⚖️" defaultOpen={true}>
+        <Accordion title="Risk & Sizing" icon={ShieldAlert} defaultOpen={true}>
           <div className="grid-auto-sm lg:grid-cols-4">
             <Field label="Start balance (USDT)" hint="Dùng khi reset paper wallet">
               <input type="number" value={cfg.start_balance} onChange={(e) => setCfg({ ...cfg, start_balance: e.target.value })} className={inputCls} />
@@ -205,18 +198,16 @@ export default function SettingsPage() {
           </div>
         </Accordion>
 
-        {/* RISK GUARDS */}
         <Accordion title="Risk Guards" icon={ShieldAlert} defaultOpen={true}>
           <div className="grid-auto-sm lg:grid-cols-3">
             <Field label="Cooldown sau stop loss (phút)" hint="Symbol vừa bị stop_loss phải chờ N phút trước khi vào lệnh lại. 0 = tắt. Tránh revenge-trade ngay sau khi cắt lỗ.">
               <input type="number" min="0" value={cfg.cooldown_minutes ?? 0} onChange={(e) => setCfg({ ...cfg, cooldown_minutes: e.target.value })} className={inputCls} />
             </Field>
-            <Field label="Daily loss limit (% equity)" hint="Mất ≥ X% trong ngày (UTC) → bot tự PAUSE. 0 = tắt. Circuit breaker chống thua dây.">
+            <Field label="Daily loss limit (% equity)" hint="Mất ≥ X% trong ngày (UTC) → bot tự PAUSE. 0 = tắt. Circuit breaker chống thua đây.">
               <input type="number" step="0.5" min="0" value={cfg.daily_loss_limit_pct ?? 0} onChange={(e) => setCfg({ ...cfg, daily_loss_limit_pct: e.target.value })} className={inputCls} />
             </Field>
-            <Field label="Correlation block" hint="ρ ≥ 0.85 với vị thế đang mở → chặn entry mới. Tránh gộp rủi ro BTC+ETH+SOL cùng lúc.">
-              <div className="input bg-zinc-800 text-zinc-400 cursor-not-allowed" style={{userSelect: 'none'}}>0.85 (hardcoded)</div>
-              <p className="hint">Ngưỡng hiện tại: 0.85. Cập nhật qua config nếu cần.</p>
+            <Field label="Correlation block" hint="ρ ≥ 0.85 với vị thế đang mở → chặn entry mới. Tránh gộp rủi ro BTC+ETH+SOL cùng lúc. (Hardcoded)">
+              <div className="input bg-zinc-800 text-zinc-400 cursor-not-allowed" style={{userSelect: 'none'}}>0.85</div>
             </Field>
           </div>
           <p className="hint flex items-start gap-2">
@@ -225,7 +216,6 @@ export default function SettingsPage() {
           </p>
         </Accordion>
 
-        {/* API KEYS */}
         <Accordion title="API Keys" icon={KeyRound} defaultOpen={false}>
           <div className="flex items-center justify-between mb-2">
             <span className="font-medium text-white">Binance Testnet API keys</span>
@@ -244,8 +234,7 @@ export default function SettingsPage() {
           </p>
         </Accordion>
 
-        {/* DANGER */}
-        <Accordion title="Danger Zone" icon="⚠️" defaultOpen={false}>
+        <Accordion title="Danger Zone" icon={AlertTriangle} defaultOpen={false}>
           <div className="border-t border-[#1e2430] pt-4">
             <button onClick={resetWallet} disabled={busy} className="btn-danger w-full">
               Reset paper wallet (xóa trades, logs, equity)

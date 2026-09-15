@@ -1,32 +1,30 @@
 "use client";
 
-import { createContext, useCallback, useContext, useState } from "react";
+import { createContext, useContext, useState } from "react";
 import { CheckCircle2, AlertTriangle, Info, X } from "lucide-react";
 
 const ToastCtx = createContext(null);
+const SidebarCtx = createContext(null);
 
 let idSeq = 1;
 
 export function ToastProvider({ children }) {
   const [toasts, setToasts] = useState([]);
 
-  const dismiss = useCallback((id) => {
+  const dismiss = (id) => {
     setToasts((t) => t.filter((x) => x.id !== id));
-  }, []);
+  };
 
-  const push = useCallback(
-    (type, text, ms = 4000) => {
-      const id = idSeq++;
-      setToasts((t) => [...t, { id, type, text }]);
-      if (ms > 0) {
-        setTimeout(() => {
-          setToasts((t) => t.filter((x) => x.id !== id));
-        }, ms);
-      }
-      return id;
-    },
-    []
-  );
+  const push = (type, text, ms = 4000) => {
+    const id = idSeq++;
+    setToasts((t) => [...t, { id, type, text }]);
+    if (ms > 0) {
+      setTimeout(() => {
+        setToasts((t) => t.filter((x) => x.id !== id));
+      }, ms);
+    }
+    return id;
+  };
 
   const toast = {
     ok: (text, ms) => push("ok", text, ms),
@@ -72,4 +70,18 @@ export function ToastProvider({ children }) {
 
 export function useToast() {
   return useContext(ToastCtx);
+}
+
+// Sidebar mobile state context
+export function SidebarProvider({ children }) {
+  const [mobileOpen, setMobileOpen] = useState(false);
+  return (
+    <SidebarCtx.Provider value={{ mobileOpen, setMobileOpen }}>
+      {children}
+    </SidebarCtx.Provider>
+  );
+}
+
+export function useSidebar() {
+  return useContext(SidebarCtx);
 }

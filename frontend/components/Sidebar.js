@@ -17,6 +17,7 @@ import {
   Wallet,
   X,
 } from "lucide-react";
+import { useSidebar } from "@/components/Toast";
 
 const NAV = [
   { href: "/", label: "Overview", icon: LayoutDashboard },
@@ -32,7 +33,7 @@ const NAV = [
 export default function Sidebar() {
   const pathname = usePathname();
   const [status, setStatus] = useState(null);
-  const [mobileOpen, setMobileOpen] = useState(false);
+  const { mobileOpen, setMobileOpen } = useSidebar();
 
   useEffect(() => {
     let alive = true;
