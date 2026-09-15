@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"binance-trade-bot/internal/backtest"
 	"binance-trade-bot/internal/config"
 	"binance-trade-bot/internal/exchange"
 	"binance-trade-bot/internal/regime"
@@ -34,6 +35,9 @@ type Engine struct {
 	cooldownsMu sync.Mutex
 	converts  map[string]bool // convert job id → done
 	convertsMu sync.Mutex
+	corrMatrix map[string]float64 // "SYM1|SYM2" → ρ (sorted key)
+	corrAt     time.Time         // lần tính correlation gần nhất
+	corrMu     sync.Mutex
 }
 
 var defaultEngine *Engine
@@ -46,9 +50,61 @@ func Get() *Engine {
 			regimes:   map[string]regime.Snapshot{},
 			cooldowns: map[string]time.Time{},
 			converts: map[string]bool{},
+			corrMatrix: map[string]float64{},
 		}
 	}
 	return defaultEngine
+}
+
+// correlationOf returns ρ giữa 2 symbol từ matrix cache (0 nếu chưa có).
+func (e *Engine) correlationOf(a, b string) float64 {
+	e.corrMu.Lock()
+	defer e.corrMu.Unlock()
+	if a > b {
+		a, b = b, a
+	}
+	return e.corrMatrix[a+"|"+b]
+}
+
+// updateCorrelations tính lại matrix từ candles đã fetch (mỗi 10 phút).
+// Dùng chung dữ liệu cycle — không gọi API thêm.
+func (e *Engine) updateCorrelations(candles map[string][]exchange.Candle) {
+	e.corrMu.Lock()
+	if time.Since(e.corrAt) < 10*time.Minute {
+		e.corrMu.Unlock()
+		return
+	}
+	e.corrMu.Unlock()
+	m := backtest.CorrelationMatrix(candles, 100)
+	e.corrMu.Lock()
+	e.corrMatrix = m
+	e.corrAt = time.Now()
+	e.corrMu.Unlock()
+}
+
+// MaxEntryCorrelation: |ρ| ≥ ngưỡng này giữa symbol MỚI và MỌI vị thế đang mở
+// → chặn entry (tránh gộp rủi ro cùng hướng).
+const MaxEntryCorrelation = 0.85
+
+// entryBlockedByCorrelation checks whether opening `sym` would stack risk
+// on top of an already-open correlated position.
+func (e *Engine) entryBlockedByCorrelation(sym string, openSyms map[string]bool) bool {
+	e.corrMu.Lock()
+	stale := time.Since(e.corrAt) > 10*time.Minute
+	e.corrMu.Unlock()
+	if stale {
+		return false // chưa có dữ liệu / quá cũ → không chặn (fail-open)
+	}
+	for open := range openSyms {
+		if open == sym {
+			continue
+		}
+		rho := e.correlationOf(sym, open)
+		if rho >= MaxEntryCorrelation {
+			return true
+		}
+	}
+	return false
 }
 
 // Cooldowns returns a copy of the cooldown map (symbol → allowed-after time).
@@ -230,6 +286,8 @@ func (e *Engine) Cycle() {
 			openCount++
 		}
 	}
+	// correlation matrix từ chính candles đã fetch (mỗi 10 phút)
+	e.updateCorrelations(candles)
 	adaptive := cfg.Strategy == "adaptive"
 	for _, sym := range symbols {
 		if openSyms[sym] {
@@ -237,6 +295,11 @@ func (e *Engine) Cycle() {
 		}
 		// cooldown guard: symbol vừa stop_loss → chờ hết N phút
 		if e.inCooldown(sym) {
+			continue
+		}
+		// correlation guard: ρ ≥ 0.85 với vị thế đang mở → không gộp rủi ro
+		if e.entryBlockedByCorrelation(sym, openSyms) {
+			e.Log("INFO", "risk", fmt.Sprintf("skip entry %s: correlation ≥ %.2f với vị thế đang mở", sym, MaxEntryCorrelation))
 			continue
 		}
 		cd := candles[sym]

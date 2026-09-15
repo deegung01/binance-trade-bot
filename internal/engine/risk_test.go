@@ -43,15 +43,53 @@ func TestCooldownExpires(t *testing.T) {
 	}
 }
 
-// TestCooldownZeroDisabled: minutes=0 → không set gì.
-func TestCooldownZeroDisabled(t *testing.T) {
+// TestEntryBlockedByCorrelation: ρ ≥ 0.85 với vị thế đang mở → chặn.
+func TestEntryBlockedByCorrelation(t *testing.T) {
 	tmpDir(t)
-	e := &Engine{cooldowns: map[string]time.Time{}}
-	e.setCooldown("BTCUSDT", 0)
-	if e.inCooldown("BTCUSDT") {
-		t.Fatal("cooldown 0 minutes must be a no-op")
+	e := &Engine{}
+	// chưa có matrix → fail-open (không chặn)
+	if e.entryBlockedByCorrelation("BTCUSDT", map[string]bool{"ETHUSDT": true}) {
+		t.Fatal("no correlation data → must fail-open")
+	}
+	// nạp matrix: BTC|ETH ρ=0.9 (correlated), BTC|SOL ρ=0.3 (ok)
+	e.corrMu.Lock()
+	e.corrMatrix = map[string]float64{
+		"BTCUSDT|ETHUSDT": 0.9,
+		"BTCUSDT|SOLUSDT": 0.3,
+	}
+	e.corrAt = time.Now()
+	e.corrMu.Unlock()
+	if !e.entryBlockedByCorrelation("BTCUSDT", map[string]bool{"ETHUSDT": true}) {
+		t.Fatal("ρ=0.9 ≥ 0.85 must block entry")
+	}
+	if e.entryBlockedByCorrelation("BTCUSDT", map[string]bool{"SOLUSDT": true}) {
+		t.Fatal("ρ=0.3 < 0.85 must allow entry")
+	}
+	// matrix quá cũ (30 phút) → fail-open
+	e.corrMu.Lock()
+	e.corrAt = time.Now().Add(-30 * time.Minute)
+	e.corrMu.Unlock()
+	if e.entryBlockedByCorrelation("BTCUSDT", map[string]bool{"ETHUSDT": true}) {
+		t.Fatal("stale matrix must fail-open")
 	}
 }
+
+// TestCorrelationOfKeyOrder: key được sort bất kể thứ tự tham số.
+func TestCorrelationOfKeyOrder(t *testing.T) {
+	tmpDir(t)
+	e := &Engine{}
+	e.corrMu.Lock()
+	e.corrMatrix = map[string]float64{"AAAUSDT|BBBUSDT": 0.5}
+	e.corrAt = time.Now()
+	e.corrMu.Unlock()
+	if e.correlationOf("AAAUSDT", "BBBUSDT") != 0.5 {
+		t.Fatal("direct lookup failed")
+	}
+	if e.correlationOf("BBBUSDT", "AAAUSDT") != 0.5 {
+		t.Fatal("reversed args must hit same key")
+	}
+}
+
 
 // TestLotRoundQty: làm tròn theo stepSize (floor), giữ maxQty.
 func TestLotRoundQty(t *testing.T) {

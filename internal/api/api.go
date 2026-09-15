@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"binance-trade-bot/internal/backtest"
 	"binance-trade-bot/internal/config"
 	"binance-trade-bot/internal/engine"
 	"binance-trade-bot/internal/exchange"
@@ -35,6 +36,8 @@ func Mux() *http.ServeMux {
 	mux.HandleFunc("/api/regimes", handleRegimes)
 	mux.HandleFunc("/api/convert/preview", handleConvertPreview)
 	mux.HandleFunc("/api/convert/execute", handleConvertExecute)
+	mux.HandleFunc("/api/backtest", handleBacktest)
+	mux.HandleFunc("/api/correlations", handleCorrelations)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]string{"status": "ok"})
 	})
@@ -685,4 +688,128 @@ func handlePartialSell(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]any{"ok": true, "sold_qty": qty, "net_usdt": net})
+}
+
+// ---------------------------------------------------------------------------
+// backtest + correlations
+// ---------------------------------------------------------------------------
+
+// handleBacktest — POST /api/backtest
+// body: {"symbols": "BTCUSDT,ETHUSDT", "interval": "1h", "limit": 500,
+//        "strategy": "ema_cross", "stake": 100, "sl_pct": 2, "tp_pct": 4,
+//        "trailing": true, "trail_pct": 1, "cooldown_bars": 0}
+// Chạy strategy trên nến lịch sử (không look-ahead) và trả metrics từng symbol.
+func handleBacktest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, 405, "POST only")
+		return
+	}
+	var body struct {
+		Symbols     string  `json:"symbols"`
+		Interval    string  `json:"interval"`
+		Limit       int     `json:"limit"`
+		Strategies  []string `json:"strategies"`
+		StartBalance float64 `json:"start_balance"`
+		Stake       float64 `json:"stake"`
+		SlPct       float64 `json:"sl_pct"`
+		TpPct       float64 `json:"tp_pct"`
+		Trailing    bool    `json:"trailing"`
+		TrailPct    float64 `json:"trail_pct"`
+		CooldownBars int    `json:"cooldown_bars"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, 400, "invalid json: "+err.Error())
+		return
+	}
+	// defaults theo config hiện tại của bot
+	cfg := config.LoadConfig()
+	if body.Interval == "" {
+		body.Interval = cfg.Timeframe
+	}
+	if body.Limit <= 0 || body.Limit > 1000 {
+		body.Limit = 500
+	}
+	if body.StartBalance <= 0 {
+		body.StartBalance = 10000
+	}
+	if body.Stake <= 0 {
+		body.Stake = cfg.StakeAmount
+		if body.Stake <= 0 {
+			body.Stake = 100
+		}
+	}
+	if body.SlPct <= 0 {
+		body.SlPct = cfg.StopLossPct
+	}
+	if body.TpPct <= 0 {
+		body.TpPct = cfg.TakeProfitPct
+	}
+	if body.TrailPct <= 0 {
+		body.TrailPct = cfg.TrailingStopPct
+	}
+	if len(body.Strategies) == 0 {
+		body.Strategies = []string{cfg.Strategy}
+	}
+
+	symbols := strings.Split(body.Symbols, ",")
+	client := dataClient()
+	results := []map[string]any{}
+	for _, s := range symbols {
+		s = strings.ToUpper(strings.TrimSpace(s))
+		if s == "" {
+			continue
+		}
+		cd, err := client.Klines(s, body.Interval, body.Limit)
+		if err != nil {
+			results = append(results, map[string]any{"symbol": s, "error": err.Error()})
+			continue
+		}
+		for _, strat := range body.Strategies {
+			res := backtest.Run(backtest.Params{
+				Symbol: s, Candles: cd, Strategy: strat,
+				StartBalance: body.StartBalance, Stake: body.Stake,
+				StopLossPct: body.SlPct, TakeProfitPct: body.TpPct,
+				TrailingStop: body.Trailing, TrailingPct: body.TrailPct,
+				GridLevels: cfg.GridLevels, CooldownBars: body.CooldownBars,
+			})
+			results = append(results, map[string]any{
+				"symbol": s, "strategy": strat, "interval": body.Interval, "result": res,
+			})
+		}
+	}
+	writeJSON(w, map[string]any{"results": results})
+}
+
+// handleCorrelations — GET /api/correlations?symbols=BTCUSDT,ETHUSDT&lookback=100
+// Ma trận |ρ| giữa các symbol (pct-change chuỗi close) — chọn tổ hợp ít trùng lặp.
+func handleCorrelations(w http.ResponseWriter, r *http.Request) {
+	in := orDefault(r.URL.Query().Get("symbols"), "BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT")
+	lookback, _ := strconv.Atoi(orDefault(r.URL.Query().Get("lookback"), "100"))
+	if lookback <= 0 || lookback > 500 {
+		lookback = 100
+	}
+	cfg := config.LoadConfig()
+	client := dataClient()
+	interval := cfg.Timeframe
+	candles := map[string][]exchange.Candle{}
+	for _, s := range strings.Split(in, ",") {
+		s = strings.ToUpper(strings.TrimSpace(s))
+		if s == "" {
+			continue
+		}
+		cd, err := client.Klines(s, interval, lookback+1)
+		if err != nil {
+			continue
+		}
+		candles[s] = cd
+	}
+	if len(candles) < 2 {
+		writeJSON(w, map[string]any{"correlations": map[string]float64{}, "interval": interval})
+		return
+	}
+	writeJSON(w, map[string]any{
+		"correlations": backtest.CorrelationMatrix(candles, lookback),
+		"interval":     interval,
+		"lookback":     lookback,
+	})
 }

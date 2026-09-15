@@ -247,3 +247,40 @@ func Bollinger(values []float64, period int, mult float64) (float64, float64, fl
 	sd := math.Sqrt(variance)
 	return mean, mean + mult*sd, mean - mult*sd, true
 }
+
+// Pearson returns the correlation coefficient of x and y (clamped −1..1).
+// Cần < 2 điểm → 0. Dùng cho correlation filter giữa các symbol.
+func Pearson(x, y []float64) float64 {
+	n := len(x)
+	if len(y) < n {
+		n = len(y)
+	}
+	if n < 2 {
+		return 0
+	}
+	mx, my := 0.0, 0.0
+	for i := 0; i < n; i++ {
+		mx += x[i]
+		my += y[i]
+	}
+	mx /= float64(n)
+	my /= float64(n)
+	cov, vx, vy := 0.0, 0.0, 0.0
+	for i := 0; i < n; i++ {
+		dx, dy := x[i]-mx, y[i]-my
+		cov += dx * dy
+		vx += dx * dx
+		vy += dy * dy
+	}
+	if vx <= 0 || vy <= 0 {
+		return 0
+	}
+	r := cov / math.Sqrt(vx*vy)
+	if r > 1 {
+		r = 1
+	}
+	if r < -1 {
+		r = -1
+	}
+	return r
+}

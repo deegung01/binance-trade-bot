@@ -9,6 +9,7 @@ import {
   BarChart3,
   Bot,
   FileText,
+  FlaskConical,
   LayoutDashboard,
   Settings,
   Shield,
@@ -21,6 +22,7 @@ const NAV = [
   { href: "/trades", label: "Trades", icon: Wallet },
   { href: "/strategy", label: "Strategy", icon: Bot },
   { href: "/convert", label: "Convert → USDT", icon: ArrowRightLeft },
+  { href: "/backtest", label: "Backtest", icon: FlaskConical },
   { href: "/logs", label: "Logs", icon: FileText },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
