@@ -1,9 +1,12 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Download, RefreshCw, Search } from "lucide-react";
+import { Download, RefreshCw, Search, ChevronDown } from "lucide-react";
 import { api, fmtUSD, fmtPct, fmtNum, fmtDate, pnlColor } from "@/lib/api";
 import { useToast } from "@/components/Toast";
+
+const inputCls = "input";
+const selectCls = "select";
 
 export default function TradesPage() {
   const toast = useToast();
@@ -13,6 +16,7 @@ export default function TradesPage() {
   const [search, setSearch] = useState("");
   const [strategyFilter, setStrategyFilter] = useState("");
   const [busy, setBusy] = useState(false);
+  const [sortConfig, setSortConfig] = useState({ key: "opened_at", dir: "desc" });
 
   const load = async () => {
     try {
@@ -28,7 +32,6 @@ export default function TradesPage() {
     load();
     const timer = setInterval(load, 5000);
     return () => clearInterval(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const closeTrade = async (id) => {
@@ -60,38 +63,13 @@ export default function TradesPage() {
     setBusy(false);
   };
 
-  const strategies = useMemo(() => {
-    const s = new Set(trades.map((t) => t.strategy).filter(Boolean));
-    return [...s].sort();
-  }, [trades]);
-
-  const shown = useMemo(() => {
-    const q = search.trim().toUpperCase();
-    return trades.filter((t) => {
-      if (filter !== "all" && t.status !== filter) return false;
-      if (strategyFilter && t.strategy !== strategyFilter) return false;
-      if (q && !t.symbol.includes(q)) return false;
-      return true;
-    });
-  }, [trades, filter, strategyFilter, search]);
-
   const exportCSV = () => {
-    if (shown.length === 0) {
-      toast.err("Không có lệnh nào để export");
-      return;
-    }
+    if (shown.length === 0) { toast.err("Không có lệnh nào để export"); return; }
     const head = ["id", "symbol", "status", "mode", "strategy", "qty", "entry_price", "exit_price", "stop_loss", "take_profit", "stake", "pnl", "pnl_pct", "exit_reason", "opened_at", "closed_at"];
-    const esc = (v) => {
-      const s = v == null ? "" : String(v);
-      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-    };
+    const esc = (v) => { const s = v == null ? "" : String(v); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
     const lines = [head.join(",")];
     for (const t of shown) {
-      lines.push([
-        t.id, t.symbol, t.status, t.mode, t.strategy, t.qty, t.entry_price,
-        t.exit_price ?? "", t.stop_loss, t.take_profit, t.stake, t.pnl,
-        t.pnl_pct, t.exit_reason ?? "", t.opened_at, t.closed_at ?? "",
-      ].map(esc).join(","));
+      lines.push([t.id, t.symbol, t.status, t.mode, t.strategy, t.qty, t.entry_price, t.exit_price ?? "", t.stop_loss, t.take_profit, t.stake, t.pnl, t.pnl_pct, t.exit_reason ?? "", t.opened_at, t.closed_at ?? ""].map(esc).join(","));
     }
     const blob = new Blob(["\uFEFF" + lines.join("\n")], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -103,132 +81,113 @@ export default function TradesPage() {
     toast.ok(`Exported ${shown.length} lệnh ra CSV`);
   };
 
+  const handleSort = (key) => {
+    setSortConfig((prev) => ({
+      key,
+      dir: prev.key === key && prev.dir === "asc" ? "desc" : "asc",
+    }));
+  };
+
+  const strategies = useMemo(() => [...new Set(trades.map((t) => t.strategy).filter(Boolean))].sort(), [trades]);
+
+  const shown = useMemo(() => {
+    const q = search.trim().toUpperCase();
+    let arr = trades.filter((t) => {
+      if (filter !== "all" && t.status !== filter) return false;
+      if (strategyFilter && t.strategy !== strategyFilter) return false;
+      if (q && !t.symbol.includes(q)) return false;
+      return true;
+    });
+    // sort
+    arr.sort((a, b) => {
+      const av = a[sortConfig.key], bv = b[sortConfig.key];
+      if (av == null && bv == null) return 0;
+      if (av == null) return 1;
+      if (bv == null) return -1;
+      const cmp = av < bv ? -1 : av > bv ? 1 : 0;
+      return sortConfig.dir === "asc" ? cmp : -cmp;
+    });
+    return arr;
+  }, [trades, filter, strategyFilter, search, sortConfig]);
+
   const prices = status?.last_cycle?.prices || {};
 
   return (
-    <div className="space-y-4 max-w-[1400px]">
-      <div className="flex flex-wrap items-center justify-between gap-3">
+    <div className="container section">
+      <div className="page-header">
         <div>
-          <h1 className="text-xl font-semibold text-white">Trades</h1>
-          <p className="text-sm text-zinc-500">Tất cả lệnh của bot + manual</p>
+          <h1 className="page-title">Trades</h1>
+          <p className="page-subtitle">Tất cả lệnh của bot + manual orders</p>
         </div>
-        <div className="flex gap-2 items-center flex-wrap">
-          <div className="flex rounded-lg overflow-hidden border border-[#1e2430] text-xs">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex rounded-lg overflow-hidden border border-[#1e2430]" role="group" aria-label="Status filter">
             {["all", "open", "closed"].map((f) => (
-              <button
-                key={f}
-                onClick={() => setFilter(f)}
-                className={`px-3 py-1.5 ${
-                  filter === f ? "bg-amber-400/15 text-amber-300" : "text-zinc-400 hover:text-white"
-                }`}
-              >
-                {f}
-              </button>
+              <button key={f} onClick={() => setFilter(f)} className={`px-3 py-1.5 text-xs ${filter === f ? "bg-amber-400/15 text-amber-300" : "text-zinc-400 hover:text-white"}`}>{f}</button>
             ))}
           </div>
-          <select
-            value={strategyFilter}
-            onChange={(e) => setStrategyFilter(e.target.value)}
-            className="bg-[#11151d] border border-[#1e2430] rounded-lg px-2.5 py-1.5 text-xs text-white outline-none focus:border-amber-400/50"
-          >
+          <select value={strategyFilter} onChange={(e) => setStrategyFilter(e.target.value)} className={selectCls} style={{minWidth: 160}}>
             <option value="">mọi strategy</option>
-            {strategies.map((s) => (
-              <option key={s} value={s}>{s}</option>
-            ))}
+            {strategies.map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
           <div className="relative">
             <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-500" />
-            <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Symbol…"
-              className="w-32 bg-[#11151d] border border-[#1e2430] rounded-lg pl-7 pr-2 py-1.5 text-xs text-white outline-none focus:border-amber-400/50"
-            />
+            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Symbol…" className="input pl-7 w-40" />
           </div>
-          <button onClick={exportCSV} className="panel px-3 py-1.5 text-sm text-zinc-300 hover:text-white flex items-center gap-2" title="Export các lệnh đang hiển thị ra CSV">
-            <Download size={13} /> CSV
-          </button>
-          <button onClick={load} className="panel px-3 py-1.5 text-sm text-zinc-300 hover:text-white flex items-center gap-2">
-            <RefreshCw size={13} /> Refresh
-          </button>
+          <button onClick={exportCSV} className="btn-secondary btn-sm" title="Export CSV"><Download size={13} /> CSV</button>
+          <button onClick={load} className="btn-ghost btn-sm" aria-label="Refresh"><RefreshCw size={13} /></button>
         </div>
       </div>
 
-      <div className="panel overflow-x-auto">
-        <table className="w-full text-xs">
-          <thead>
-            <tr className="text-zinc-500 border-b border-[#1e2430]">
-              <th className="text-left py-3 px-4 font-normal">ID</th>
-              <th className="text-left font-normal">Symbol</th>
-              <th className="text-left font-normal">Opened</th>
-              <th className="text-right font-normal">Qty</th>
-              <th className="text-right font-normal">Entry</th>
-              <th className="text-right font-normal">Current/Exit</th>
-              <th className="text-right font-normal">SL / TP</th>
-              <th className="text-right font-normal">PnL</th>
-              <th className="text-right font-normal">Reason</th>
-              <th className="text-right font-normal pr-4">Action</th>
-            </tr>
-          </thead>
-          <tbody>
-            {shown.map((t) => {
-              const cur = t.status === "open" ? prices[t.symbol] || t.entry_price : t.exit_price;
-              const unreal = t.status === "open" ? (cur - t.entry_price) * t.qty : t.pnl;
-              const upct = t.status === "open" ? ((cur - t.entry_price) / t.entry_price) * 100 : t.pnl_pct;
-              return (
-                <tr key={t.id} className="border-b border-[#161c28] hover:bg-white/[0.02]">
-                  <td className="py-2.5 px-4 text-zinc-500">#{t.id}</td>
-                  <td className="text-white font-medium">{t.symbol}</td>
-                  <td className="text-zinc-400">{fmtDate(t.opened_at)}</td>
-                  <td className="text-right tabular text-zinc-300">{fmtNum(t.qty, 6)}</td>
-                  <td className="text-right tabular text-zinc-300">{fmtUSD(t.entry_price)}</td>
-                  <td className="text-right tabular text-zinc-300">{fmtUSD(cur)}</td>
-                  <td className="text-right tabular text-[11px]">
-                    <span className="text-rose-400/80">{fmtUSD(t.stop_loss)}</span>
-                    <span className="text-zinc-600"> / </span>
-                    <span className="text-emerald-400/80">{fmtUSD(t.take_profit)}</span>
-                  </td>
-                  <td className={`text-right tabular font-medium ${pnlColor(unreal)}`}>
-                    {unreal > 0 ? "+" : ""}
-                    {fmtUSD(unreal)} <span className="text-[10px] opacity-70">{fmtPct(upct)}</span>
-                  </td>
-                  <td className="text-right text-zinc-500 text-[11px] max-w-[180px] truncate">
-                    {t.signal_reason || t.exit_reason || "—"}
-                    {t.meta?.grid_count > 0 && (
-                      <span className="ml-1 text-amber-400" title={`DCA ${t.meta.grid_count} lần`}>
-                        [{t.meta.grid_count}x]
-                      </span>
-                    )}
-                  </td>
-                  <td className="text-right pr-4">
-                    {t.status === "open" && (
-                      <div className="flex gap-1 justify-end">
-                        <button
-                          onClick={() => partialClose(t.id, 50)}
-                          disabled={busy}
-                          title="Đóng 50% lệnh, phần còn lại giữ SL/TP"
-                          className="text-[11px] px-2 py-1 rounded bg-amber-500/15 text-amber-300 hover:bg-amber-500/25"
-                        >
-                          50%
-                        </button>
-                        <button
-                          onClick={() => closeTrade(t.id)}
-                          disabled={busy}
-                          className="text-[11px] px-2 py-1 rounded bg-rose-500/15 text-rose-300 hover:bg-rose-500/25"
-                        >
-                          Close
-                        </button>
-                      </div>
-                    )}
-                  </td>
+      <div className="card">
+        <div className="card-body p-0">
+          <div className="table-wrap">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th onClick={() => handleSort("id")} className="cursor-pointer select-none">ID <span className={`inline ml-1 text-xs ${sortConfig.key==="id" ? (sortConfig.dir==="asc"?"↑":"↓") : ""}`} /></th>
+                  <th onClick={() => handleSort("symbol")} className="cursor-pointer select-none">Symbol <span className={`inline ml-1 text-xs ${sortConfig.key==="symbol" ? (sortConfig.dir==="asc"?"↑":"↓") : ""}`} /></th>
+                  <th onClick={() => handleSort("opened_at")} className="cursor-pointer select-none">Opened <span className={`inline ml-1 text-xs ${sortConfig.key==="opened_at" ? (sortConfig.dir==="asc"?"↑":"↓") : ""}`} /></th>
+                  <th className="text-right">Qty</th>
+                  <th className="text-right">Entry</th>
+                  <th className="text-right">Current/Exit</th>
+                  <th className="text-right">SL / TP</th>
+                  <th onClick={() => handleSort("pnl")} className="text-right cursor-pointer select-none">PnL <span className={`inline ml-1 text-xs ${sortConfig.key==="pnl" ? (sortConfig.dir==="asc"?"↑":"↓") : ""}`} /></th>
+                  <th className="text-right max-w-[180px]">Reason</th>
+                  <th className="text-right pr-4">Action</th>
                 </tr>
-              );
-            })}
-          </tbody>
-        </table>
-        {shown.length === 0 && (
-          <div className="py-10 text-center text-sm text-zinc-500">Không có lệnh nào khớp bộ lọc</div>
-        )}
+              </thead>
+              <tbody>
+                {shown.map((t) => {
+                  const cur = t.status === "open" ? prices[t.symbol] || t.entry_price : t.exit_price;
+                  const unreal = t.status === "open" ? (cur - t.entry_price) * t.qty : t.pnl;
+                  const upct = t.status === "open" ? ((cur - t.entry_price) / t.entry_price) * 100 : t.pnl_pct;
+                  return (
+                    <tr key={t.id}>
+                      <td className="text-zinc-500 font-mono">#{t.id}</td>
+                      <td className="text-white font-medium">{t.symbol}</td>
+                      <td className="text-zinc-400">{fmtDate(t.opened_at)}</td>
+                      <td className="text-right tabular text-zinc-300">{fmtNum(t.qty, 6)}</td>
+                      <td className="text-right tabular text-zinc-300">{fmtUSD(t.entry_price)}</td>
+                      <td className="text-right tabular text-zinc-300">{fmtUSD(cur)}</td>
+                      <td className="text-right tabular text-[11px]"><span className="text-rose-400/80">{fmtUSD(t.stop_loss)}</span> / <span className="text-emerald-400/80">{fmtUSD(t.take_profit)}</span></td>
+                      <td className={`text-right tabular font-medium ${pnlColor(unreal)}`}>{unreal > 0 ? "+" : ""}{fmtUSD(unreal)} <span className="text-[10px] opacity-70">{fmtPct(upct)}</span></td>
+                      <td className="text-right text-zinc-500 text-[11px] max-w-[180px] truncate pr-2">{t.signal_reason || t.exit_reason || "—"}{t.meta?.grid_count > 0 && <span className="ml-1 text-amber-400" title={`DCA ${t.meta.grid_count} lần`}> [{t.meta.grid_count}x]</span>}</td>
+                      <td className="text-right pr-4">
+                        {t.status === "open" && (
+                          <div className="flex items-center justify-end gap-1">
+                            <button onClick={() => partialClose(t.id, 50)} disabled={busy} title="Đóng 50% lệnh, phần còn lại giữ SL/TP" className="btn-secondary btn-sm">50%</button>
+                            <button onClick={() => closeTrade(t.id)} disabled={busy} className="btn-danger btn-sm">Close</button>
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            {shown.length === 0 && <div className="empty h-32"><div className="empty-title">Không có lệnh nào khớp bộ lọc</div></div>}
+          </div>
+        </div>
       </div>
     </div>
   );

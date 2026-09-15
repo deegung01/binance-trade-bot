@@ -14,41 +14,26 @@ body {
   font-feature-settings: "tnum";
 }
 
-::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-::-webkit-scrollbar-thumb {
-  background: #232b3b;
-  border-radius: 4px;
-}
-::-webkit-scrollbar-thumb:hover {
-  background: #2e3a52;
-}
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #232b3b; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #2e3a52; }
 
 .panel {
-  background: #11151d;
-  border: 1px solid #1e2430;
-  border-radius: 12px;
+  @apply bg-[#11151d] border border-[#1e2430] rounded-xl;
 }
 
-.tabular {
-  font-variant-numeric: tabular-nums;
-}
+.tabular { font-variant-numeric: tabular-nums; }
 
 @keyframes pulse-dot {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.35; }
 }
-.live-dot {
-  animation: pulse-dot 1.6s ease-in-out infinite;
-}
+.live-dot { animation: pulse-dot 1.6s ease-in-out infinite; }
 
-/* toast slide-in */
 @keyframes slidein {
   from { transform: translateX(16px); opacity: 0; }
   to { transform: translateX(0); opacity: 1; }
 }
+
+.skeleton { @apply bg-gradient-to-r from-[#1e2430] via-[#2a3548] to-[#1e2430] animate-pulse rounded-lg; }

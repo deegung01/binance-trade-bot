@@ -1,35 +1,52 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { KeyRound, Save, ShieldAlert, Timer } from "lucide-react";
+import { KeyRound, Save, ShieldAlert, Timer, ChevronDown } from "lucide-react";
 import { api } from "@/lib/api";
 import { useToast } from "@/components/Toast";
 
+const inputCls = "input";
+const selectCls = "select";
+
+const SECTIONS = [
+  { id: "trading", label: "Trading", icon: "📈" },
+  { id: "risk", label: "Risk & Sizing", icon: "⚖️" },
+  { id: "guards", label: "Risk Guards", icon: ShieldAlert },
+  { id: "api", label: "API Keys", icon: KeyRound },
+  { id: "danger", label: "Danger Zone", icon: "⚠️" },
+];
+
 function Field({ label, hint, children }) {
   return (
-    <div>
-      <label className="text-xs text-zinc-500">{label}</label>
+    <div className="space-y-1">
+      <label className="label">{label}</label>
       {children}
-      {hint && <p className="mt-1 text-[11px] text-zinc-600">{hint}</p>}
+      {hint && <p className="hint">{hint}</p>}
     </div>
   );
 }
 
-const inputCls =
-  "mt-1 w-full bg-[#0d1117] border border-[#1e2430] rounded-lg px-3 py-2 text-sm text-white outline-none focus:border-amber-400/50";
-
-const TABS = [
-  { id: "trading", label: "Trading" },
-  { id: "risk", label: "Risk & Sizing" },
-  { id: "guards", label: "Risk Guards" },
-  { id: "api", label: "API Keys" },
-  { id: "danger", label: "Danger Zone" },
-];
+function Accordion({ title, icon: Icon, children, defaultOpen = true }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <details className="accordion group" open={defaultOpen}>
+      <summary className="accordion-header">
+        <div className="flex items-center gap-2">
+          {Icon && <Icon size={16} className="text-amber-400" />}
+          <span className="font-medium text-white">{title}</span>
+        </div>
+        <ChevronDown size={16} className="accordion-icon text-zinc-500 group-[details[open]]:rotate-180" />
+      </summary>
+      <div className="accordion-content p-5 pt-2 animate-[slidein_.2s_ease-out]">
+        {children}
+      </div>
+    </details>
+  );
+}
 
 export default function SettingsPage() {
   const toast = useToast();
   const [cfg, setCfg] = useState(null);
-  const [tab, setTab] = useState("trading");
   const [busy, setBusy] = useState(false);
 
   const load = async () => {
@@ -43,7 +60,6 @@ export default function SettingsPage() {
 
   useEffect(() => {
     load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const save = async () => {
@@ -91,61 +107,48 @@ export default function SettingsPage() {
     setBusy(false);
   };
 
-  if (!cfg) return <div className="text-zinc-500 text-sm">Loading…</div>;
+  if (!cfg) return <div className="empty"><div className="empty-icon"><div className="skeleton w-12 h-12 rounded-full" /></div><div className="empty-title">Loading…</div></div>;
 
   return (
-    <div className="space-y-6 max-w-[900px]">
-      <div>
-        <h1 className="text-xl font-semibold text-white">Settings</h1>
-        <p className="text-sm text-zinc-500">Cấu hình bot — tự áp dụng ở engine cycle kế tiếp</p>
+    <div className="container section">
+      <div className="page-header">
+        <div>
+          <h1 className="page-title">Settings</h1>
+          <p className="page-subtitle">Cấu hình bot — tự áp dụng ở engine cycle kế tiếp</p>
+        </div>
+        <button onClick={save} disabled={busy} className="btn-primary">
+          <Save size={14} /> {busy ? "Đang lưu…" : "Lưu cấu hình"}
+        </button>
       </div>
 
-      {/* tabs */}
-      <div className="flex gap-1 border-b border-[#1e2430]">
-        {TABS.map((t) => (
-          <button
-            key={t.id}
-            onClick={() => setTab(t.id)}
-            className={`px-4 py-2 text-sm rounded-t-lg transition-colors ${
-              tab === t.id
-                ? "text-amber-300 bg-amber-400/10 border-b-2 border-amber-400"
-                : "text-zinc-400 hover:text-white"
-            }`}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
-
-      {/* TRADING */}
-      {tab === "trading" && (
-        <div className="panel p-5 space-y-4">
-          <h2 className="text-sm font-medium text-white">Trading</h2>
-          <div className="grid md:grid-cols-2 gap-4">
-            <Field label="Mode">
-              <select value={cfg.trading_mode} onChange={(e) => setCfg({ ...cfg, trading_mode: e.target.value })} className={inputCls}>
+      <div className="grid-auto-xl gap-6">
+        {/* TRADING */}
+        <Accordion title="Trading" icon={Bot} defaultOpen={true}>
+          <div className="grid-auto-sm lg:grid-cols-4">
+            <Field label="Mode" hint="Paper = ví mô phỏng, Live = lệnh thật trên testnet">
+              <select value={cfg.trading_mode} onChange={(e) => setCfg({ ...cfg, trading_mode: e.target.value })} className={selectCls}>
                 <option value="paper">Paper (ví mô phỏng)</option>
                 <option value="live">Live (lệnh thật trên testnet)</option>
               </select>
             </Field>
             <Field label="Nguồn dữ liệu giá" hint="Giá testnet mỏng & thiếu thực tế — mainnet cho giá thật khi paper trading">
-              <select value={cfg.paper_data_source} onChange={(e) => setCfg({ ...cfg, paper_data_source: e.target.value })} className={inputCls}>
+              <select value={cfg.paper_data_source} onChange={(e) => setCfg({ ...cfg, paper_data_source: e.target.value })} className={selectCls}>
                 <option value="testnet">Binance Testnet</option>
                 <option value="mainnet">Binance Mainnet (chỉ giá)</option>
               </select>
             </Field>
-            <Field label="Symbols (cách nhau bằng dấu phẩy)">
+            <Field label="Symbols (phẩy cách nhau)">
               <input value={cfg.trading_symbols} onChange={(e) => setCfg({ ...cfg, trading_symbols: e.target.value.toUpperCase() })} className={inputCls} />
             </Field>
             <Field label="Timeframe">
-              <select value={cfg.timeframe} onChange={(e) => setCfg({ ...cfg, timeframe: e.target.value })} className={inputCls}>
+              <select value={cfg.timeframe} onChange={(e) => setCfg({ ...cfg, timeframe: e.target.value })} className={selectCls}>
                 {(cfg.timeframes || ["1m", "5m", "15m", "1h", "4h", "1d"]).map((t) => (
                   <option key={t}>{t}</option>
                 ))}
               </select>
             </Field>
             <Field label="Strategy">
-              <select value={cfg.strategy} onChange={(e) => setCfg({ ...cfg, strategy: e.target.value })} className={inputCls}>
+              <select value={cfg.strategy} onChange={(e) => setCfg({ ...cfg, strategy: e.target.value })} className={selectCls}>
                 {(cfg.strategies_available || []).map((s) => (
                   <option key={s.id} value={s.id}>{s.label}</option>
                 ))}
@@ -155,19 +158,16 @@ export default function SettingsPage() {
               <input type="number" value={cfg.poll_interval} onChange={(e) => setCfg({ ...cfg, poll_interval: e.target.value })} className={inputCls} />
             </Field>
           </div>
-        </div>
-      )}
+        </Accordion>
 
-      {/* RISK & SIZING */}
-      {tab === "risk" && (
-        <div className="panel p-5 space-y-4">
-          <h2 className="text-sm font-medium text-white">Risk & position sizing</h2>
-          <div className="grid md:grid-cols-3 gap-4">
+        {/* RISK & SIZING */}
+        <Accordion title="Risk & Sizing" icon="⚖️" defaultOpen={true}>
+          <div className="grid-auto-sm lg:grid-cols-4">
             <Field label="Start balance (USDT)" hint="Dùng khi reset paper wallet">
               <input type="number" value={cfg.start_balance} onChange={(e) => setCfg({ ...cfg, start_balance: e.target.value })} className={inputCls} />
             </Field>
             <Field label="Stake mode">
-              <select value={cfg.stake_mode} onChange={(e) => setCfg({ ...cfg, stake_mode: e.target.value })} className={inputCls}>
+              <select value={cfg.stake_mode} onChange={(e) => setCfg({ ...cfg, stake_mode: e.target.value })} className={selectCls}>
                 <option value="fixed">Số cố định</option>
                 <option value="percent">% của cash</option>
               </select>
@@ -190,15 +190,8 @@ export default function SettingsPage() {
             <Field label="Max open trades">
               <input type="number" value={cfg.max_open_trades} onChange={(e) => setCfg({ ...cfg, max_open_trades: e.target.value })} className={inputCls} />
             </Field>
-            <Field
-              label="Trailing stop"
-              hint="Bật để SL tự bám theo giá cao nhất (chỉ nâng lên). Áp dụng MỌI strategy."
-            >
-              <select
-                value={cfg.trailing_stop ? "on" : "off"}
-                onChange={(e) => setCfg({ ...cfg, trailing_stop: e.target.value === "on" })}
-                className={inputCls}
-              >
+            <Field label="Trailing stop" hint="Bật để SL tự bám theo giá cao nhất (chỉ nâng lên). Áp dụng MỌI strategy.">
+              <select value={cfg.trailing_stop ? "on" : "off"} onChange={(e) => setCfg({ ...cfg, trailing_stop: e.target.value === "on" })} className={selectCls}>
                 <option value="off">Tắt (chỉ SL/TP cố định)</option>
                 <option value="on">Bật (SL trailing theo high)</option>
               </select>
@@ -210,88 +203,56 @@ export default function SettingsPage() {
               <input type="number" value={cfg.grid_levels ?? 4} onChange={(e) => setCfg({ ...cfg, grid_levels: e.target.value })} className={inputCls} />
             </Field>
           </div>
-        </div>
-      )}
+        </Accordion>
 
-      {/* RISK GUARDS */}
-      {tab === "guards" && (
-        <div className="panel p-5 space-y-4">
-          <h2 className="text-sm font-medium text-white flex items-center gap-2">
-            <ShieldAlert size={14} className="text-amber-400" /> Risk guards
-          </h2>
-          <div className="grid md:grid-cols-2 gap-4">
-            <Field
-              label="Cooldown sau stop loss (phút)"
-              hint="Symbol vừa bị stop_loss phải chờ N phút trước khi vào lệnh lại. 0 = tắt. Tránh revenge-trade ngay sau khi cắt lỗ."
-            >
+        {/* RISK GUARDS */}
+        <Accordion title="Risk Guards" icon={ShieldAlert} defaultOpen={true}>
+          <div className="grid-auto-sm lg:grid-cols-3">
+            <Field label="Cooldown sau stop loss (phút)" hint="Symbol vừa bị stop_loss phải chờ N phút trước khi vào lệnh lại. 0 = tắt. Tránh revenge-trade ngay sau khi cắt lỗ.">
               <input type="number" min="0" value={cfg.cooldown_minutes ?? 0} onChange={(e) => setCfg({ ...cfg, cooldown_minutes: e.target.value })} className={inputCls} />
             </Field>
-            <Field
-              label="Daily loss limit (% equity)"
-              hint="Mất ≥ X% trong ngày (UTC) → bot tự PAUSE. 0 = tắt. Circuit breaker chống thua dây."
-            >
+            <Field label="Daily loss limit (% equity)" hint="Mất ≥ X% trong ngày (UTC) → bot tự PAUSE. 0 = tắt. Circuit breaker chống thua dây.">
               <input type="number" step="0.5" min="0" value={cfg.daily_loss_limit_pct ?? 0} onChange={(e) => setCfg({ ...cfg, daily_loss_limit_pct: e.target.value })} className={inputCls} />
             </Field>
+            <Field label="Correlation block" hint="ρ ≥ 0.85 với vị thế đang mở → chặn entry mới. Tránh gộp rủi ro BTC+ETH+SOL cùng lúc.">
+              <div className="input bg-zinc-800 text-zinc-400 cursor-not-allowed" style={{userSelect: 'none'}}>0.85 (hardcoded)</div>
+              <p className="hint">Ngưỡng hiện tại: 0.85. Cập nhật qua config nếu cần.</p>
+            </Field>
           </div>
-          <div className="text-[11px] text-zinc-600 flex items-start gap-2 pt-1">
+          <p className="hint flex items-start gap-2">
             <Timer size={12} className="mt-0.5 shrink-0" />
-            Cooldown áp cho stop_loss / trailing_stop / regime cut. Daily limit so equity đầu
-            ngày UTC với equity hiện tại — khi chạm limit, bot pause và bạn phải bật lại thủ công.
-          </div>
-        </div>
-      )}
-
-      {/* API KEYS */}
-      {tab === "api" && (
-        <div className="panel p-5 space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-medium text-white flex items-center gap-2">
-              <KeyRound size={14} className="text-amber-400" /> Binance Testnet API keys
-            </h2>
-            {cfg.has_credentials && (
-              <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300">đã cấu hình qua env</span>
-            )}
-          </div>
-          <p className="text-[11px] text-zinc-500">
-            Backend (Go) đọc keys từ biến môi trường — không lưu trong database. Lấy keys tại{" "}
-            <span className="text-amber-400">testnet.binance.vision</span> (login GitHub), rồi set trên Render:
+            Cooldown áp cho stop_loss / trailing_stop / regime cut. Daily limit so equity đầu ngày UTC với equity hiện tại — khi chạm limit, bot pause và bạn phải bật lại thủ công. Correlation filter chạy mỗi 10 phút từ candles đã fetch.
           </p>
+        </Accordion>
+
+        {/* API KEYS */}
+        <Accordion title="API Keys" icon={KeyRound} defaultOpen={false}>
+          <div className="flex items-center justify-between mb-2">
+            <span className="font-medium text-white">Binance Testnet API keys</span>
+            {cfg.has_credentials && <span className="badge-ok">đã cấu hình qua env</span>}
+          </div>
+          <p className="hint">Backend (Go) đọc keys từ biến môi trường — không lưu trong database. Lấy keys tại <span className="text-amber-400">testnet.binance.vision</span> (login GitHub), rồi set trên Render:</p>
           <div className="rounded-lg bg-[#0d1117] border border-[#1e2430] p-3 font-mono text-[11px] text-zinc-300 space-y-1">
             <p className="text-zinc-500"># Render → Service → Environment:</p>
-            <p>BINANCE_API_KEY = &lt;64-char key&gt;</p>
-            <p>BINANCE_API_SECRET = &lt;secret&gt;</p>
+            <p>{`BINANCE_API_KEY = <64-char key>`}</p>
+            <p>{`BINANCE_API_SECRET = <secret>`}</p>
             <p className="text-zinc-500"># sau đó set TRADING_MODE=live để bot đặt lệnh thật trên testnet</p>
           </div>
-          <p className="text-[11px] text-zinc-600">
+          <p className="hint mt-2">
             Paper mode hoạt động không cần keys. Mode hiện tại:{" "}
             <b className={cfg.trading_mode === "live" ? "text-rose-300" : "text-sky-300"}>{cfg.trading_mode}</b>
           </p>
-        </div>
-      )}
+        </Accordion>
 
-      {/* DANGER */}
-      {tab === "danger" && (
-        <div className="panel p-5 border-rose-500/20">
-          <h2 className="text-sm font-medium text-rose-300 mb-2">Danger zone</h2>
-          <button
-            onClick={resetWallet}
-            disabled={busy}
-            className="px-4 py-2 rounded-lg bg-rose-500/15 text-rose-300 hover:bg-rose-500/25 text-xs"
-          >
-            Reset paper wallet (xóa trades, logs, equity)
-          </button>
-        </div>
-      )}
-
-      {tab !== "danger" && tab !== "api" && (
-        <button
-          onClick={save}
-          disabled={busy}
-          className="px-5 py-2.5 rounded-lg bg-amber-400/15 text-amber-300 hover:bg-amber-400/25 text-sm font-medium flex items-center gap-2"
-        >
-          <Save size={14} /> Lưu cấu hình
-        </button>
-      )}
+        {/* DANGER */}
+        <Accordion title="Danger Zone" icon="⚠️" defaultOpen={false}>
+          <div className="border-t border-[#1e2430] pt-4">
+            <button onClick={resetWallet} disabled={busy} className="btn-danger w-full">
+              Reset paper wallet (xóa trades, logs, equity)
+            </button>
+          </div>
+        </Accordion>
+      </div>
     </div>
   );
 }

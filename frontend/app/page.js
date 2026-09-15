@@ -5,6 +5,7 @@ import Link from "next/link";
 import {
   ArrowDownRight,
   ArrowUpRight,
+  AlertTriangle,
   Bot,
   Clock,
   Coins,
@@ -27,19 +28,15 @@ const fmtQty = (v) =>
 
 function StatCard({ icon: Icon, label, value, sub, tone = "default" }) {
   return (
-    <div className="panel p-4">
-      <div className="flex items-center justify-between text-xs text-zinc-500">
-        <span className="uppercase tracking-wide">{label}</span>
+    <div className="stat-card">
+      <div className="flex items-center justify-between">
+        <span className="stat-label">{label}</span>
         {Icon && <Icon size={14} className="text-zinc-600" />}
       </div>
-      <div
-        className={`mt-2 text-xl font-semibold tabular ${
-          tone === "up" ? "text-emerald-400" : tone === "down" ? "text-rose-400" : "text-white"
-        }`}
-      >
+      <div className={`stat-value ${tone === "up" ? "text-emerald-400" : tone === "down" ? "text-rose-400" : ""}`}>
         {value}
       </div>
-      {sub && <div className="mt-1 text-xs text-zinc-500">{sub}</div>}
+      {sub && <div className="stat-sub">{sub}</div>}
     </div>
   );
 }
@@ -84,44 +81,36 @@ export default function Overview() {
 
   if (error && !status) {
     return (
-      <div className="panel p-8 text-center">
-        <p className="text-rose-400">Backend not reachable: {error}</p>
-        <p className="mt-2 text-sm text-zinc-500">
-          Make sure the backend is running, then refresh.
-        </p>
+      <div className="empty">
+        <div className="empty-icon"><AlertTriangle size={48} className="text-rose-500/50" /></div>
+        <div className="empty-title">Backend not reachable</div>
+        <div className="empty-desc">{error}</div>
+        <button onClick={load} className="btn-primary mt-4">Retry</button>
       </div>
     );
   }
-  if (!status) return <div className="text-zinc-500 text-sm">Loading…</div>;
+  if (!status) return <div className="empty"><div className="empty-icon"><div className="skeleton w-12 h-12 rounded-full" /></div><div className="empty-title">Loading…</div></div>;
 
   const st = status.stats;
   const up = status.profit >= 0;
 
   return (
-    <div className="space-y-6 max-w-[1400px]">
-      {/* header */}
-      <div className="flex items-center justify-between">
+    <div className="container section">
+      <div className="page-header">
         <div>
-          <h1 className="text-xl font-semibold text-white">Overview</h1>
-          <p className="text-sm text-zinc-500">
+          <h1 className="page-title">Overview</h1>
+          <p className="page-subtitle">
             Paper trading on Binance Spot Testnet · last cycle {fmtTime(status.last_cycle?.ts)} UTC
           </p>
         </div>
-        <div className="flex gap-2">
-          <button
-            onClick={load}
-            className="panel px-3 py-2 text-sm text-zinc-300 hover:text-white flex items-center gap-2"
-          >
+        <div className="flex items-center gap-2 flex-wrap">
+          <button onClick={load} className="btn-secondary btn-sm" aria-label="Refresh">
             <RefreshCw size={14} /> Refresh
           </button>
           <button
             onClick={toggleRunning}
             disabled={busy}
-            className={`px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 ${
-              status.running
-                ? "bg-rose-500/15 text-rose-300 hover:bg-rose-500/25"
-                : "bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25"
-            }`}
+            className={`btn ${status.running ? "btn-danger" : "btn-primary"}`}
           >
             {status.running ? <Pause size={14} /> : <Play size={14} />}
             {status.running ? "Pause bot" : "Start bot"}
@@ -130,118 +119,98 @@ export default function Overview() {
       </div>
 
       {/* stat cards */}
-      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-4">
-        <StatCard
-          icon={Wallet}
-          label="Equity"
-          value={fmtUSD(status.equity)}
-          sub={`start ${fmtUSD(status.start_balance, 0)}`}
-        />
-        <StatCard
-          icon={up ? TrendingUp : TrendingDown}
-          label="Profit"
-          value={
-            <span className={pnlColor(status.profit)}>
-              {up ? "+" : ""}
-              {fmtUSD(status.profit)} ({fmtPct(status.profit_pct)})
-            </span>
-          }
-          tone={up ? "up" : "down"}
-        />
-        <StatCard
-          icon={Coins}
-          label={status.mode === "live" ? "USDT (testnet)" : "Cash"}
-          value={fmtUSD(status.cash)}
-          sub={
-            status.mode === "live"
-              ? `in coins ${fmtUSD(status.positions_value)}`
-              : `in positions ${fmtUSD(status.positions_value)}`
-          }
-        />
+      <div className="grid-auto-sm lg:grid-cols-6">
+        <StatCard icon={Wallet} label="Equity" value={fmtUSD(status.equity)} sub={`start ${fmtUSD(status.start_balance, 0)}`} />
+        <StatCard icon={up ? TrendingUp : TrendingDown} label="Profit" value={<span className={pnlColor(status.profit)}>{up ? "+" : ""}{fmtUSD(status.profit)} ({fmtPct(status.profit_pct)})</span>} tone={up ? "up" : "down"} />
+        <StatCard icon={Coins} label={status.mode === "live" ? "USDT (testnet)" : "Cash"} value={fmtUSD(status.cash)} sub={status.mode === "live" ? `in coins ${fmtUSD(status.positions_value)}` : `in positions ${fmtUSD(status.positions_value)}`} />
         <StatCard icon={Percent} label="Win rate" value={`${st.win_rate}%`} sub={`${st.wins}W / ${st.losses}L`} />
         <StatCard icon={Target} label="Total PnL (closed)" value={fmtUSD(st.total_pnl)} sub={`${st.closed_trades} closed trades`} />
         <StatCard icon={TrendingDown} label="Max drawdown" value={`${st.max_drawdown}%`} sub={`best ${fmtUSD(st.best_trade)} / worst ${fmtUSD(st.worst_trade)}`} />
       </div>
 
-      <div className="grid lg:grid-cols-3 gap-4">
+      <div className="grid-auto lg:grid-cols-[2fr_1fr] gap-4">
         {/* equity chart */}
-        <div className="panel p-4 lg:col-span-2">
-          <div className="flex items-center justify-between mb-3">
+        <div className="card">
+          <div className="card-header flex items-center justify-between">
             <h2 className="text-sm font-medium text-white">Equity curve</h2>
             <span className="text-xs text-zinc-500">{equity.length} snapshots</span>
           </div>
-          <EquityChart points={equity} />
+          <div className="card-body h-64">
+            <EquityChart points={equity} />
+          </div>
         </div>
 
         {/* open positions */}
-        <div className="panel p-4">
-          <div className="flex items-center justify-between mb-3">
+        <div className="card">
+          <div className="card-header flex items-center justify-between">
             <h2 className="text-sm font-medium text-white">Open positions</h2>
-            <Link href="/trades" className="text-xs text-amber-400 hover:underline">
-              view all →
-            </Link>
+            <Link href="/trades" className="text-xs text-amber-400 hover:underline">view all →</Link>
           </div>
-          {status.open_trades.length === 0 ? (
-            <p className="text-sm text-zinc-500 py-6 text-center">No open positions</p>
-          ) : (
-            <div className="space-y-2">
-              {status.open_trades.map((t) => {
-                const price = status.last_cycle?.prices?.[t.symbol] || t.entry_price;
-                const cur = ((price - t.entry_price) / t.entry_price) * 100;
-                return (
-                  <div key={t.id} className="rounded-lg bg-white/[0.03] border border-[#1e2430] p-3">
-                    <div className="flex justify-between items-center">
-                      <span className="font-medium text-white text-sm">{t.symbol}</span>
-                      <span className={`text-xs font-medium tabular ${pnlColor(cur)}`}>
-                        {fmtPct(cur)} · {fmtUSD(((price - t.entry_price) * t.qty))}
-                      </span>
+          <div className="card-body p-0">
+            {status.open_trades.length === 0 ? (
+              <div className="empty h-48">
+                <div className="empty-icon"><Wallet size={32} /></div>
+                <div className="empty-title">No open positions</div>
+                <div className="empty-desc">Start the bot or place a manual order</div>
+              </div>
+            ) : (
+              <div className="divide-y divide-[#161c28]">
+                {status.open_trades.map((t) => {
+                  const price = status.last_cycle?.prices?.[t.symbol] || t.entry_price;
+                  const cur = ((price - t.entry_price) / t.entry_price) * 100;
+                  return (
+                    <div key={t.id} className="p-4 hover:bg-white/[0.02]">
+                      <div className="flex items-center justify-between">
+                        <span className="font-medium text-white text-sm">{t.symbol}</span>
+                        <span className={`text-xs font-medium tabular ${pnlColor(cur)}`}>
+                          {fmtPct(cur)} · {fmtUSD(((price - t.entry_price) * t.qty))}
+                        </span>
+                      </div>
+                      <div className="mt-2 grid grid-cols-4 gap-y-1 text-xs text-zinc-500">
+                        <span>Qty {fmtNum(t.qty, 6)}</span>
+                        <span>Entry {fmtUSD(t.entry_price)}</span>
+                        <span className="text-rose-400/80">SL {fmtUSD(t.stop_loss)}</span>
+                        <span className="text-emerald-400/80">TP {fmtUSD(t.take_profit)}</span>
+                      </div>
                     </div>
-                    <div className="mt-2 text-xs text-zinc-500 grid grid-cols-2 gap-y-1">
-                      <span>Qty {fmtNum(t.qty, 6)}</span>
-                      <span>Entry {fmtUSD(t.entry_price)}</span>
-                      <span className="text-rose-400/80">SL {fmtUSD(t.stop_loss)}</span>
-                      <span className="text-emerald-400/80">TP {fmtUSD(t.take_profit)}</span>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
-      {/* balances (live mode — testnet có nhiều coin) */}
+      {/* balances (live mode) */}
       {status.mode === "live" && status.balances?.length > 0 && (
-        <div className="panel p-4">
-          <div className="flex items-center justify-between mb-3">
+        <div className="card">
+          <div className="card-header flex items-center justify-between">
             <h2 className="text-sm font-medium text-white">Testnet account balances</h2>
-            <span className="text-xs text-zinc-500">
-              {status.balances.length} coins · total {fmtUSD(status.equity)}
-            </span>
+            <span className="text-xs text-zinc-500">{status.balances.length} coins · total {fmtUSD(status.equity)}</span>
           </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs">
+          <div className="table-wrap">
+            <table className="table">
               <thead>
-                <tr className="text-zinc-500 border-b border-[#1e2430]">
-                  <th className="text-left py-2 font-normal">Asset</th>
-                  <th className="text-right font-normal">Free</th>
-                  <th className="text-right font-normal">Locked</th>
-                  <th className="text-right font-normal">Price (USDT)</th>
-                  <th className="text-right font-normal">Value (USDT)</th>
-                  <th className="text-right font-normal pr-2">%</th>
+                <tr>
+                  <th>Asset</th>
+                  <th className="text-right">Free</th>
+                  <th className="text-right">Locked</th>
+                  <th className="text-right">Price (USDT)</th>
+                  <th className="text-right">Value (USDT)</th>
+                  <th className="text-right pr-4">%</th>
                 </tr>
               </thead>
               <tbody>
                 {status.balances.map((b) => {
                   const pct = status.equity > 0 ? (b.usdt_value / status.equity) * 100 : 0;
                   return (
-                    <tr key={b.asset} className="border-b border-[#161c28]">
-                      <td className="py-1.5 text-white font-medium">{b.asset}</td>
+                    <tr key={b.asset}>
+                      <td className="font-medium text-white">{b.asset}</td>
                       <td className="text-right tabular text-zinc-300">{fmtQty(b.free)}</td>
                       <td className="text-right tabular text-zinc-500">{b.locked > 0 ? fmtQty(b.locked) : "—"}</td>
                       <td className="text-right tabular text-zinc-400">{b.price ? fmtUSD(b.price, b.price >= 100 ? 2 : 4) : "—"}</td>
                       <td className="text-right tabular text-zinc-300">{fmtUSD(b.usdt_value)}</td>
-                      <td className="text-right tabular text-zinc-500 pr-2">{pct.toFixed(1)}%</td>
+                      <td className="text-right tabular text-zinc-500 pr-4">{pct.toFixed(1)}%</td>
                     </tr>
                   );
                 })}
@@ -252,26 +221,30 @@ export default function Overview() {
       )}
 
       {/* market prices */}
-      <div className="panel p-4">
-        <h2 className="text-sm font-medium text-white mb-3">Watchlist (testnet prices)</h2>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          {Object.entries(status.last_cycle?.prices || {}).map(([sym, price]) => (
-            <div key={sym} className="rounded-lg bg-white/[0.03] border border-[#1e2430] p-3">
-              <div className="text-xs text-zinc-500">{sym}</div>
-              <div className="text-white font-medium tabular mt-0.5">{fmtUSD(price)}</div>
-            </div>
-          ))}
+      <div className="card">
+        <h2 className="card-header text-sm font-medium text-white">Watchlist (testnet prices)</h2>
+        <div className="card-body">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            {Object.entries(status.last_cycle?.prices || {}).map(([sym, price]) => (
+              <div key={sym} className="rounded-lg border border-[#1e2430] p-3 hover:bg-white/[0.02] transition-colors">
+                <div className="text-xs text-zinc-500">{sym}</div>
+                <div className="text-white font-medium tabular mt-0.5">{fmtUSD(price)}</div>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
 
       {/* strategy info footer */}
-      <div className="panel p-4 flex flex-wrap items-center gap-x-8 gap-y-2 text-xs text-zinc-500">
-        <span className="flex items-center gap-1.5"><Bot size={13} /> strategy: <b className="text-zinc-300">{status.last_cycle?.strategy || "—"}</b></span>
-        <span className="flex items-center gap-1.5"><Clock size={13} /> timeframe: <b className="text-zinc-300">{status.last_cycle?.timeframe || "—"}</b></span>
-        <span className="flex items-center gap-1.5"><Wallet size={13} /> open trades: <b className="text-zinc-300">{status.open_trades.length}</b></span>
-        <span className="flex items-center gap-1.5">
-          mode: <b className={status.mode === "live" ? "text-rose-300" : "text-sky-300"}>{status.mode}</b>
-        </span>
+      <div className="card p-4">
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-xs text-zinc-500">
+          <span className="flex items-center gap-1.5"><Bot size={13} /> strategy: <b className="text-zinc-300">{status.last_cycle?.strategy || "—"}</b></span>
+          <span className="flex items-center gap-1.5"><Clock size={13} /> timeframe: <b className="text-zinc-300">{status.last_cycle?.timeframe || "—"}</b></span>
+          <span className="flex items-center gap-1.5"><Wallet size={13} /> open trades: <b className="text-zinc-300">{status.open_trades.length}</b></span>
+          <span className="flex items-center gap-1.5">
+            mode: <b className={status.mode === "live" ? "text-rose-300" : "text-sky-300"}>{status.mode}</b>
+          </span>
+        </div>
       </div>
     </div>
   );
